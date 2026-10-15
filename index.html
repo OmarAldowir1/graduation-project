@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html class="light" lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta content="width=device-width, initial-scale=1.0" name="viewport" />
+    <meta content="#4268a8" name="theme-color" />
+    <link href="/manifest.webmanifest" rel="manifest" />
+    <title>Motion — Your workspace, simplified.</title>
+    <meta
+      name="description"
+      content="Motion brings your notes, databases, and tasks together into a single, serene workspace designed for deep focus and effortless organization."
+    />
+
+    <!-- TailwindCSS CDN (keep same as vanilla app) -->
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+
+    <!-- Fonts -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Shared Design System -->
+    <link href="/src/styles.css" rel="stylesheet" />
+
+    <!-- Tailwind Config (Monastic Design System) -->
+    <script id="tailwind-config">
+      tailwind.config = {
+        darkMode: 'class',
+        theme: {
+          extend: {
+            colors: {
+              'on-primary-fixed': '#403f3f',
+              'on-tertiary': '#f4faff',
+              'on-primary-fixed-variant': '#5c5b5b',
+              'on-error': '#fff7f6',
+              surface: 'var(--surface)',
+              'surface-variant': 'var(--surface-variant)',
+              'surface-container-high': 'var(--surface-container-high)',
+              'on-primary-container': 'var(--on-primary-container)',
+              'error-dim': '#4e0309',
+              'on-secondary-fixed': '#3f3f3f',
+              'tertiary-container': 'var(--tertiary-container)',
+              'tertiary-fixed': '#d0ecff',
+              background: 'var(--background)',
+              'on-error-container': '#752121',
+              secondary: 'var(--secondary)',
+              'error-container': 'var(--error-container)',
+              'surface-container-lowest': 'var(--surface-container-lowest)',
+              'on-secondary-container': '#515252',
+              'on-surface': 'var(--on-surface)',
+              'on-tertiary-fixed-variant': '#486272',
+              'on-secondary-fixed-variant': '#5b5b5b',
+              'primary-dim': 'var(--primary-dim)',
+              primary: 'var(--primary)',
+              'surface-tint': 'var(--surface-tint)',
+              'surface-container-low': 'var(--surface-container-low)',
+              'on-secondary': 'var(--on-secondary)',
+              'on-primary': 'var(--on-primary)',
+              'inverse-surface': '#0c0f0e',
+              'surface-bright': 'var(--surface-bright)',
+              'secondary-fixed': '#e3e2e2',
+              outline: 'var(--outline)',
+              'tertiary-fixed-dim': '#c2def0',
+              'on-surface-variant': 'var(--on-surface-variant)',
+              'secondary-fixed-dim': '#d5d4d4',
+              'secondary-dim': '#535353',
+              'inverse-on-surface': '#9c9d9c',
+              'outline-variant': 'var(--outline-variant)',
+              'tertiary-dim': '#3c5666',
+              'surface-dim': 'var(--surface-dim)',
+              tertiary: 'var(--tertiary)',
+              'surface-container-highest': 'var(--surface-container-highest)',
+              'primary-container': 'var(--primary-container)',
+              'primary-fixed': '#e5e2e1',
+              error: 'var(--error)',
+              'on-tertiary-fixed': '#2c4655',
+              'secondary-container': 'var(--secondary-container)',
+              'primary-fixed-dim': '#d6d4d3',
+              'inverse-primary': '#ffffff',
+              'on-tertiary-container': '#3e5868',
+              'surface-container': 'var(--surface-container)',
+              'on-background': 'var(--on-background)'
+            },
+            borderRadius: {
+              DEFAULT: '0.5rem',
+              lg: '0.75rem',
+              xl: '1rem',
+              full: '9999px'
+            },
+            fontFamily: {
+              headline: ['Inter'],
+              body: ['Inter'],
+              label: ['Inter']
+            }
+          }
+        }
+      };
+    </script>
+  </head>
+  <body class="bg-surface text-on-surface">
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

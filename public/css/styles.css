@@ -1,0 +1,273 @@
+/* ============================================
+   MOTION — Shared Design System Stylesheet
+   Based on "The Monastic Workspace" (aura_mono)
+   ============================================ */
+
+/* — Google Fonts — */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+/* — CSS Custom Properties (Design Tokens) — */
+:root {
+  /* Surface Hierarchy (Tonal Stacking) */
+  --surface: #f9f9f8;
+  --surface-dim: #d4dcda;
+  --surface-bright: #f9f9f8;
+  --surface-container-lowest: #ffffff;
+  --surface-container-low: #f2f4f3;
+  --surface-container: #ebeeed;
+  --surface-container-high: #e4e9e8;
+  --surface-container-highest: #dde4e3;
+  --surface-variant: #dde4e3;
+  --surface-tint: #5f5e5e;
+
+  /* Primary Palette */
+  --primary: #5f5e5e;
+  --primary-dim: #535252;
+  --primary-container: #e5e2e1;
+  --primary-fixed: #e5e2e1;
+  --primary-fixed-dim: #d6d4d3;
+  --on-primary: #faf7f6;
+  --on-primary-container: #525151;
+  --on-primary-fixed: #403f3f;
+  --on-primary-fixed-variant: #5c5b5b;
+  --inverse-primary: #ffffff;
+
+  /* Secondary Palette */
+  --secondary: #5f5f5f;
+  --secondary-dim: #535353;
+  --secondary-container: #e3e2e2;
+  --secondary-fixed: #e3e2e2;
+  --secondary-fixed-dim: #d5d4d4;
+  --on-secondary: #faf8f8;
+  --on-secondary-container: #515252;
+  --on-secondary-fixed: #3f3f3f;
+  --on-secondary-fixed-variant: #5b5b5b;
+
+  /* Tertiary Palette */
+  --tertiary: #486272;
+  --tertiary-dim: #3c5666;
+  --tertiary-container: #d0ecff;
+  --tertiary-fixed: #d0ecff;
+  --tertiary-fixed-dim: #c2def0;
+  --on-tertiary: #f4faff;
+  --on-tertiary-container: #3e5868;
+  --on-tertiary-fixed: #2c4655;
+  --on-tertiary-fixed-variant: #486272;
+
+  /* Error Palette */
+  --error: #9f403d;
+  --error-dim: #4e0309;
+  --error-container: #fe8983;
+  --on-error: #fff7f6;
+  --on-error-container: #752121;
+
+  /* Background & Text */
+  --background: #f9f9f8;
+  --on-background: #2d3433;
+  --on-surface: #2d3433;
+  --on-surface-variant: #5a6060;
+  --inverse-surface: #0c0f0e;
+  --inverse-on-surface: #9c9d9c;
+
+  /* Outline */
+  --outline: #757c7b;
+  --outline-variant: #adb3b2;
+
+  /* Border Radius */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+  --radius-full: 9999px;
+
+  /* Shadows */
+  --shadow-soft: 0 10px 30px -10px rgba(45, 52, 51, 0.05);
+  --shadow-ambient: 0 40px 40px -15px rgba(45, 52, 51, 0.04);
+  --shadow-elevated: 0 20px 50px rgba(0, 0, 0, 0.1);
+}
+
+/* — Base Reset — */
+*, *::before, *::after {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--surface);
+  color: var(--on-surface);
+}
+
+/* — Material Symbols — */
+.material-symbols-outlined {
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  vertical-align: middle;
+  user-select: none;
+}
+
+/* — Monastic Scrollbar — */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(173, 179, 178, 0.2); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(173, 179, 178, 0.4); }
+
+/* — Glass Panel (for floating elements) — */
+.glass-panel {
+  background: rgba(249, 249, 248, 0.7);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+
+/* — Selection Highlight — */
+::selection {
+  background-color: var(--tertiary-container);
+  color: var(--on-tertiary-container);
+}
+
+/* — Loading Skeleton — */
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+.skeleton {
+  background: var(--surface-container);
+  border-radius: var(--radius-md);
+  animation: skeleton-pulse 1.5s ease-in-out infinite;
+}
+
+.skeleton-text {
+  height: 0.75rem;
+  margin-bottom: 0.5rem;
+  border-radius: var(--radius-sm);
+}
+
+.skeleton-text.short { width: 40%; }
+.skeleton-text.medium { width: 65%; }
+.skeleton-text.long { width: 85%; }
+
+.skeleton-circle {
+  border-radius: var(--radius-full);
+}
+
+.skeleton-card {
+  height: 12rem;
+  border-radius: var(--radius-lg);
+}
+
+/* — Empty State — */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 3rem 2rem;
+  text-align: center;
+  color: var(--on-surface-variant);
+}
+
+.empty-state .material-symbols-outlined {
+  font-size: 3rem;
+  opacity: 0.3;
+  margin-bottom: 1rem;
+}
+
+.empty-state h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+  color: var(--on-surface);
+}
+
+.empty-state p {
+  font-size: 0.875rem;
+  opacity: 0.7;
+}
+
+/* — Error State — */
+.error-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 2rem;
+  text-align: center;
+  color: var(--on-error-container);
+  background: rgba(254, 137, 131, 0.1);
+  border-radius: var(--radius-lg);
+}
+
+/* — Loading Overlay — */
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(249, 249, 248, 0.8);
+  backdrop-filter: blur(4px);
+  z-index: 50;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-spinner {
+  width: 2rem;
+  height: 2rem;
+  border: 2px solid var(--surface-container-high);
+  border-top-color: var(--primary);
+  border-radius: var(--radius-full);
+  animation: spin 0.6s linear infinite;
+}
+
+/* — Fade-in Animation — */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+/* — Toast/Notification — */
+.toast {
+  position: fixed;
+  bottom: 2rem;
+  right: 2rem;
+  padding: 0.75rem 1.25rem;
+  border-radius: var(--radius-lg);
+  font-size: 0.875rem;
+  font-weight: 500;
+  z-index: 100;
+  animation: fade-in 0.3s ease-out;
+  box-shadow: var(--shadow-elevated);
+}
+
+.toast-success {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.toast-error {
+  background: var(--error);
+  color: var(--on-error);
+}
+
+/* — Utility: Hide — */
+.hidden { display: none !important; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}

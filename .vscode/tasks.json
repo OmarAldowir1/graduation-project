@@ -1,0 +1,21 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Run Motion (Vite dev server)",
+      "type": "npm",
+      "script": "dev",
+      "path": "${workspaceFolder}",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": [{ "regexp": ".*" }],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "vite",
+          "endsPattern": "Local:"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "Motion Workspace",
+  "short_name": "Motion",
+  "description": "Notes, databases, tasks, and collaboration in one workspace.",
+  "start_url": "/#dashboard",
+  "display": "standalone",
+  "background_color": "#f9f9f8",
+  "theme_color": "#4268a8",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
