@@ -9,7 +9,7 @@ export function openAIPagePanel({pageTitle, pageText, applyBlocks, undoApply}) {
     <header><div><small>FREE COLAB PROTOTYPE</small><h2>AI page assistant</h2></div><button data-close aria-label="Close AI page assistant">×</button></header>
     <p class="ai-panel-help">Generate in the Colab notebook, then import the result here. No API calls or automatic page uploads.</p>
     <a href="https://colab.research.google.com/github/OmarAldowir1/graduation-project/blob/codex/page-ai-prototype/colab/Motion_Page_AI.ipynb" target="_blank" rel="noopener noreferrer">Open free Colab notebook ↗</a>
-    <label>Your request<textarea data-prompt rows="3" placeholder="Create a project plan for a restaurant booking app using React."></textarea></label>
+    <label>Your request<textarea data-prompt rows="3" maxlength="4000" placeholder="Create a project plan for a restaurant booking app using React."></textarea></label>
     <label class="ai-context-choice"><input type="checkbox" data-context /> Include current page text when copying the request</label>
     <button class="modal-btn-secondary" data-copy>Copy request for Colab</button>
     <label>Generated JSON<textarea data-json rows="7" placeholder="Paste the notebook’s version 1 JSON proposal here."></textarea></label>
@@ -52,6 +52,7 @@ export function openAIPagePanel({pageTitle, pageText, applyBlocks, undoApply}) {
   overlay.querySelector('[data-preview]').addEventListener('click',()=>{
     invalidate();try{plan=validateAIPlan(json.value);}catch(error){status.textContent=error.message;return;}
     results.innerHTML=`<h3>${esc(plan.title)}</h3><p class="ai-panel-help">Append to “${esc(pageTitle)}”. The current title and blocks stay unchanged.</p>${plan.blocks.map((block,index)=>`<article class="ai-proposed-block"><label class="ai-block-selection"><input type="checkbox" data-index="${index}" checked /> ${index+1}. ${esc(block.type)}</label><div class="motion-block-content">${aiBlockHtml(block)}</div></article>`).join('')}`;
+    results.querySelectorAll('input:not([data-index])').forEach(input=>input.disabled=true);
     apply.disabled=false;status.textContent=`${plan.blocks.length} valid blocks. Select the ones you want to add.`;
   });
   results.addEventListener('change',()=>{apply.disabled=!results.querySelector('input[data-index]:checked');});

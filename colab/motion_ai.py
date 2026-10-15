@@ -43,7 +43,9 @@ def generate_plan(model, tokenizer, request, page_context, schema):
         raise ValueError("Enter a request of 1–4,000 characters")
     instructions = (
         "Create a useful Motion page plan. Return exactly one JSON object, no prose or Markdown fences. "
-        "Follow this JSON schema: " + json.dumps(schema) +
+        'The output must be a page INSTANCE, never the schema itself. Root keys are exactly version, title, blocks. '
+        'Example shape: {"version":1,"title":"Project plan","blocks":[{"type":"heading1","content":"Project plan"},{"type":"todo","content":"Design\\nBuild\\nTest"},{"type":"table","rows":[["Tool","Purpose"],["React","UI"]]}]}. '
+        "The following is the validation schema, NOT content to reproduce: " + json.dumps(schema) +
         "\nUse 4–10 concise blocks. Lists use newline-separated content strings. "
         "A table uses rows, with the first row as headers and every row the same width. "
         "A toggle uses its first content line as title and following lines as hidden content. "

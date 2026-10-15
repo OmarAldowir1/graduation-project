@@ -42,6 +42,7 @@ function cleanBlockContent(html) {
 }
 
 export async function renderEditor(container, route) {
+  document.querySelector('.ai-page-backdrop')?.dispatchEvent(new Event('motion:close'));
   setBreadcrumb('Editor');
 
   const pageIdFromRoute = route?.segments?.[0] || null;
@@ -430,6 +431,7 @@ export async function renderEditor(container, route) {
       pageTitle: titleEl.textContent,
       pageText: plain.content.textContent,
       applyBlocks: async html => {
+        if (!titleEl.isConnected) throw new Error('The editor changed. Reopen the AI assistant on the current page.');
         clearTimeout(saveTimeout);
         const root = container.querySelector('#editor-empty-area');
         const before = root.innerHTML;
@@ -447,6 +449,7 @@ export async function renderEditor(container, route) {
         try {localStorage.setItem(aiUndoKey,JSON.stringify({id,expected}));} catch {throw new Error('Blocks saved, but local storage is unavailable for Undo.');}
       },
       undoApply: async () => {
+        if (!titleEl.isConnected) throw new Error('The editor changed. Reopen the AI assistant on the current page.');
         let undo;try{undo=JSON.parse(localStorage.getItem(aiUndoKey));}catch{undo=null;}
         if(!undo?.id || !Array.isArray(undo.expected)) throw new Error('There is no saved AI addition to undo on this browser.');
         const blocks=[...container.querySelectorAll('[data-ai-batch]')].filter(block=>block.dataset.aiBatch===undo.id);

@@ -11,6 +11,8 @@ test('reject malformed, oversized, unsupported, and uneven proposals',()=>{
   for(const proposal of [
     '{invalid', 'x'.repeat(100001),
     {...AI_EXAMPLE,version:2},
+    {...AI_EXAMPLE,extra:'unsupported'},
+    {...AI_EXAMPLE,blocks:[{type:'divider',content:'unsupported'}]},
     {...AI_EXAMPLE,blocks:[]},
     {...AI_EXAMPLE,blocks:[{type:'script',content:'alert(1)'}]},
     {...AI_EXAMPLE,blocks:[{type:'table',rows:[['A','B'],['C']]}]},
