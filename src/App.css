@@ -982,6 +982,17 @@
 .task-detail-discussion time { display: block; font-size: .65rem; color: var(--on-surface-variant); }
 .task-detail-discussion [data-comments] { margin-bottom: 1rem; font-size: .8rem; }
 .task-card-description { font-size: .75rem; margin-bottom: .6rem; color: var(--on-surface-variant); overflow-wrap: anywhere; }
+.ai-page-panel { display: flex; flex-direction: column; gap: 1rem; }
+.ai-page-panel > header { margin-bottom: 0; }
+.ai-page-panel > a { color: var(--primary); text-decoration: underline; font-size: .85rem; }
+.ai-panel-help { font-size: .8rem; color: var(--on-surface-variant); }
+.ai-panel-buttons { display: flex; flex-wrap: wrap; gap: .5rem; }
+.ai-panel-buttons button:disabled { opacity: .5; cursor: not-allowed; }
+.ai-page-panel .ai-context-choice,.ai-page-panel .ai-block-selection { display: flex; flex-direction: row; align-items: center; gap: .5rem; font-size: .75rem; }
+.ai-file-label { padding: .5rem; border: 1px solid var(--outline-variant); border-radius: .5rem; }
+.ai-proposed-block { padding: .8rem; margin: .7rem 0; border: 1px solid var(--outline-variant); border-radius: .6rem; background: var(--surface-container-lowest); }
+.ai-page-panel [data-status] { font-size: .85rem; color: var(--primary); white-space: pre-wrap; }
+.ai-page-panel > footer { position: sticky; bottom: -1.5rem; padding: .8rem 0; background: var(--surface); }
 @media(max-width:480px) { .task-detail-panel { padding: 1rem; } }
 
 html.dark {

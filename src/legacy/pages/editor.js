@@ -7,6 +7,7 @@ import { AppState, setBreadcrumb, showToast } from '../app.js';
 import { assistWithText } from '../../lib/ai.js';
 import { sanitizeHtml } from '../../lib/sanitize.js';
 import { composeBlock, getBlockType } from '../../lib/blockComposer.js';
+import { openAIPagePanel } from '../../lib/aiPagePanel.js';
 import {
   getRecentPages,
   getPages,
@@ -107,6 +108,10 @@ export async function renderEditor(container, route) {
             Import
           </button>
           <input id="editor-import-input" type="file" accept=".md,.markdown,text/markdown,text/plain" hidden />
+          <button id="editor-page-ai" class="editor-action-button" type="button" title="Preview Colab-generated page blocks">
+            <span class="material-symbols-outlined text-sm">auto_awesome</span>
+            AI page assistant
+          </button>
           <button id="editor-ai-toggle" class="editor-action-button" type="button" title="Smart assist">
             <span class="material-symbols-outlined text-sm">auto_awesome</span>
             Smart assist
@@ -417,6 +422,47 @@ export async function renderEditor(container, route) {
     handle.focus();
   });
   decorateBlocks();
+
+  const aiUndoKey = `motion-ai-undo:${page.id}`;
+  container.querySelector('#editor-page-ai')?.addEventListener('click', () => {
+    const plain = document.createElement('template'); plain.innerHTML = editorHtml();
+    openAIPagePanel({
+      pageTitle: titleEl.textContent,
+      pageText: plain.content.textContent,
+      applyBlocks: async html => {
+        clearTimeout(saveTimeout);
+        const root = container.querySelector('#editor-empty-area');
+        const before = root.innerHTML;
+        const template = document.createElement('template'); template.innerHTML = sanitizeHtml(html);
+        const id = crypto.randomUUID();
+        const blocks = [...template.content.children];
+        blocks.forEach(block => block.setAttribute('data-ai-batch',id));
+        const expected = blocks.map(block => block.outerHTML);
+        root.append(template.content);
+        if (!await saveNow()) {
+          root.innerHTML = before; decorateBlocks();
+          writeLocalDraft(page.id,{title:titleEl.textContent,html:editorHtml()});
+          throw new Error('Apply failed. The proposal was not kept on the page.');
+        }
+        try {localStorage.setItem(aiUndoKey,JSON.stringify({id,expected}));} catch {throw new Error('Blocks saved, but local storage is unavailable for Undo.');}
+      },
+      undoApply: async () => {
+        let undo;try{undo=JSON.parse(localStorage.getItem(aiUndoKey));}catch{undo=null;}
+        if(!undo?.id || !Array.isArray(undo.expected)) throw new Error('There is no saved AI addition to undo on this browser.');
+        const blocks=[...container.querySelectorAll('[data-ai-batch]')].filter(block=>block.dataset.aiBatch===undo.id);
+        if(blocks.length!==undo.expected.length || blocks.some((block,index)=>cleanBlockContent(block.outerHTML)!==undo.expected[index])) throw new Error('These AI blocks were edited or reordered. Remove them individually to preserve your changes.');
+        clearTimeout(saveTimeout);
+        const backups=blockRoots.map(root=>root.innerHTML);
+        blocks.forEach(block=>block.remove());
+        if(!await saveNow()){
+          blockRoots.forEach((root,index)=>{root.innerHTML=backups[index];});decorateBlocks();
+          writeLocalDraft(page.id,{title:titleEl.textContent,html:editorHtml()});
+          throw new Error('Undo could not save. The blocks were restored.');
+        }
+        localStorage.removeItem(aiUndoKey);
+      }
+    });
+  });
 
   const changeCover = async () => {
     const url = await requestInput('Paste an image URL (leave blank to remove the cover):', page.cover_url || '');

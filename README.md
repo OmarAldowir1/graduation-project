@@ -4,6 +4,12 @@ Motion is a responsive, Notion-style workspace with pages, notes, Kanban tasks, 
 
 ## Run from VS Code
 
+## Free page AI prototype
+
+The `codex/page-ai-prototype` branch adds an editor **AI page assistant** with validated JSON previews, selected-block Apply, Cancel and guarded Undo. Generate proposals in the [free Colab notebook](https://colab.research.google.com/github/OmarAldowir1/graduation-project/blob/codex/page-ai-prototype/colab/Motion_Page_AI.ipynb), then import them manually. No paid API or hosted notebook endpoint is used. Free GPU availability is not guaranteed. See [the prototype guide](docs/AI_PROTOTYPE.md) and run `npm run test:ai`.
+
+### Local startup
+
 1. Open the `G-Project` folder in VS Code.
 2. Open **Terminal → New Terminal**.
 3. Confirm Node.js is installed:
