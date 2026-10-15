@@ -45,7 +45,9 @@ def generate_plan(model, tokenizer, request, page_context, schema):
         "Create a useful Motion page plan. Return exactly one JSON object, no prose or Markdown fences. "
         'The output must be a page INSTANCE, never the schema itself. Root keys are exactly version, title, blocks. '
         'Example shape: {"version":1,"title":"Project plan","blocks":[{"type":"heading1","content":"Project plan"},{"type":"todo","content":"Design\\nBuild\\nTest"},{"type":"table","rows":[["Tool","Purpose"],["React","UI"]]}]}. '
-        "The following is the validation schema, NOT content to reproduce: " + json.dumps(schema) +
+        'Allowed block types: text, heading1, heading2, heading3, bulleted, numbered, todo, quote, callout, code, table, toggle, divider. '
+        'Each block has type and content (plain string), except table has type and rows (array of string arrays) and divider only has type. '
+        'Use free/open-source tools unless the user explicitly requests otherwise. Do not suggest paid APIs. '
         "\nUse 4–10 concise blocks. Lists use newline-separated content strings. "
         "A table uses rows, with the first row as headers and every row the same width. "
         "A toggle uses its first content line as title and following lines as hidden content. "
@@ -70,7 +72,10 @@ def generate_plan(model, tokenizer, request, page_context, schema):
             cleaned = raw.strip()
             if cleaned.startswith("```"):
                 cleaned = cleaned.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-            return validate_plan(json.loads(cleaned), schema)
+            plan = validate_plan(json.loads(cleaned), schema)
+            if not 4 <= len(plan["blocks"]) <= 10:
+                raise ValueError("Create 4–10 separate blocks, not a single Markdown document inside a text block")
+            return plan
         except Exception as error:
             last_error = error
             print("Output did not pass validation:", str(error)[:300])
