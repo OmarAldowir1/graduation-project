@@ -109,13 +109,13 @@ export async function renderEditor(container, route) {
             Import
           </button>
           <input id="editor-import-input" type="file" accept=".md,.markdown,text/markdown,text/plain" hidden />
-          <button id="editor-page-ai" class="editor-action-button" type="button" title="Preview Colab-generated page blocks">
+          <button id="editor-page-ai" class="editor-action-button" type="button" title="Ask AI to draft content for this page">
             <span class="material-symbols-outlined text-sm">auto_awesome</span>
             AI page assistant
           </button>
-          <button id="editor-ai-toggle" class="editor-action-button" type="button" title="Smart assist">
+          <button id="editor-ai-toggle" class="editor-action-button" type="button" title="Local text tools (not generative AI)">
             <span class="material-symbols-outlined text-sm">auto_awesome</span>
-            Smart assist
+            Text tools
           </button>
           <button id="editor-add-task" class="editor-action-button" type="button" title="Create a task linked to this page">
             <span class="material-symbols-outlined text-sm">add_task</span>
@@ -147,10 +147,10 @@ export async function renderEditor(container, route) {
         <div id="editor-ai-panel" class="editor-ai-panel" hidden>
           <div class="editor-ai-heading">
             <div>
-              <strong>Smart assist</strong>
-              <p>Summarize, improve, or extract action items from this page.</p>
+              <strong>Local text tools</strong>
+              <p>Simple local text helpers. For generative writing, use AI page assistant.</p>
             </div>
-            <button id="editor-ai-close" type="button" aria-label="Close smart assist">×</button>
+            <button id="editor-ai-close" type="button" aria-label="Close local text tools">×</button>
           </div>
           <div class="editor-ai-actions">
             <button type="button" data-ai-action="summarize">Summarize</button>
@@ -428,6 +428,7 @@ export async function renderEditor(container, route) {
   container.querySelector('#editor-page-ai')?.addEventListener('click', () => {
     const plain = document.createElement('template'); plain.innerHTML = editorHtml();
     openAIPagePanel({
+      pageId: page.id,
       pageTitle: titleEl.textContent,
       pageText: plain.content.textContent,
       applyBlocks: async html => {
@@ -549,7 +550,7 @@ export async function renderEditor(container, route) {
   const insertBlock = async (type) => {
     closeBlockMenu();
     if (type === 'ai') {
-      if (aiPanel) aiPanel.hidden = false;
+      container.querySelector('#editor-page-ai')?.click();
       return;
     }
     if (type === 'comment') {

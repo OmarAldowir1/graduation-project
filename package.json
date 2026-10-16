@@ -9,7 +9,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "test:ai": "node --test tests/ai-blocks.test.js",
+    "test:ai": "node --test tests/ai-blocks.test.js tests/page-ai-handler.test.js",
     "preview": "vite preview",
     "check": "npm run lint && npm run build"
   },
