@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { isSupabaseConfigured, SUPABASE_URL } from '../lib/config.js';
 import { getSession, sendPasswordReset, signIn, signInWithGoogle, signUp, updatePassword } from '../lib/supabase.js';
 import { showToast } from '../legacy/app.js';
+import { withAuthDeadline } from '../lib/authRequest.js';
 
 function isNetworkFetchError(err) {
   const msg = (err && (err.message || String(err))) || '';
@@ -45,24 +46,24 @@ export default function Login({ isBootstrapping }) {
 
   async function handleSubmit(e) {
     e.preventDefault();
+    if (loading) return;
     setError('');
     setLoading(true);
     try {
       if (!isSupabaseConfigured) throw new Error('Supabase is not configured. Copy .env.example to .env and add your project URL and anon key.');
       if (mode === 'reset') {
-        const { error: resetError } = await sendPasswordReset(email);
+        const { error: resetError } = await withAuthDeadline(() => sendPasswordReset(email.trim()));
         if (resetError) throw resetError;
         setMode('signin');
         setError('If an account exists for that email, a password reset link has been sent.');
       } else if (mode === 'signin') {
-        const { error: signInError } = await signIn(email, password);
+        const { error: signInError } = await withAuthDeadline(() => signIn(email.trim(), password));
         if (signInError) throw signInError;
         showToast('Signed in!', 'success');
         window.location.hash = 'dashboard';
       } else {
-        const { error: signUpError } = await signUp(email, password, name);
+        const { session, error: signUpError } = await withAuthDeadline(() => signUp(email.trim(), password, name.trim()));
         if (signUpError) throw signUpError;
-        const session = await getSession();
         if (session) {
           showToast('Account created!', 'success');
           window.location.hash = 'dashboard';
@@ -72,7 +73,11 @@ export default function Login({ isBootstrapping }) {
         }
       }
     } catch (err) {
-      if (isNetworkFetchError(err)) {
+      if (err?.code === 'AUTH_TIMEOUT') {
+        setError(mode === 'signup'
+          ? 'Sign up took too long to respond. Your account may already have been created. Refresh this page, then try Sign In with the same email and password before signing up again. If email confirmation is enabled, also check your inbox.'
+          : 'The sign-in service took too long to respond. Check your connection, refresh this page, and try again.');
+      } else if (isNetworkFetchError(err)) {
         logNetworkHelpForDevelopers(err);
         setError(friendlyNetworkHelp());
       }
@@ -87,7 +92,7 @@ export default function Login({ isBootstrapping }) {
     setLoading(true);
     try {
       if (!isSupabaseConfigured) throw new Error('Supabase is not configured. Copy .env.example to .env and add your project URL and anon key.');
-      const { error: oauthError } = await signInWithGoogle();
+      const { error: oauthError } = await withAuthDeadline(() => signInWithGoogle());
       if (oauthError) throw oauthError;
     } catch (err) {
       if (isNetworkFetchError(err)) {
@@ -95,6 +100,7 @@ export default function Login({ isBootstrapping }) {
         setError(friendlyNetworkHelp());
       }
       else setError(err?.message || 'Google sign-in failed');
+    } finally {
       setLoading(false);
     }
   }
@@ -121,6 +127,7 @@ export default function Login({ isBootstrapping }) {
           <div className="flex mb-6 bg-surface-container rounded-lg p-1">
             <button
               type="button"
+              disabled={loading}
               className={`flex-1 py-2 text-sm font-semibold rounded-md transition-all ${
                 mode === 'signin' ? 'bg-white shadow-sm text-on-surface' : 'text-on-surface-variant'
               }`}
@@ -130,6 +137,7 @@ export default function Login({ isBootstrapping }) {
             </button>
             <button
               type="button"
+              disabled={loading}
               className={`flex-1 py-2 text-sm font-semibold rounded-md transition-all ${
                 mode === 'signup' ? 'bg-white shadow-sm text-on-surface' : 'text-on-surface-variant'
               }`}
@@ -150,12 +158,12 @@ export default function Login({ isBootstrapping }) {
           ) : null}
 
           {error ? (
-            <div className="mb-4 p-3 rounded-lg bg-error-container/20 text-on-error-container text-sm font-medium whitespace-pre-wrap">
+            <div role="alert" className="mb-4 p-3 rounded-lg bg-error-container/20 text-on-error-container text-sm font-medium whitespace-pre-wrap">
               {error}
             </div>
           ) : null}
 
-          <form className="space-y-6" onSubmit={handleSubmit}>
+          <form className="space-y-6" onSubmit={handleSubmit} aria-busy={loading}>
             {mode === 'signup' ? (
               <div className="space-y-1.5">
                 <label className="block text-xs font-semibold tracking-wider text-on-surface-variant uppercase pl-1">
@@ -164,6 +172,7 @@ export default function Login({ isBootstrapping }) {
                 <input
                   className="w-full px-4 py-3 bg-surface-container rounded-lg border-none focus:ring-1 focus:ring-primary focus:bg-surface-container-lowest transition-all duration-200 text-on-surface placeholder:text-outline text-sm"
                   value={name}
+                  disabled={loading}
                   onChange={(e) => setName(e.target.value)}
                   required
                   type="text"
@@ -177,6 +186,7 @@ export default function Login({ isBootstrapping }) {
               <input
                 className="w-full px-4 py-3 bg-surface-container rounded-lg border-none focus:ring-1 focus:ring-primary focus:bg-surface-container-lowest transition-all duration-200 text-on-surface placeholder:text-outline text-sm"
                 value={email}
+                disabled={loading}
                 onChange={(e) => setEmail(e.target.value)}
                 required
                 type="email"
@@ -189,6 +199,7 @@ export default function Login({ isBootstrapping }) {
               <input
                 className="w-full px-4 py-3 bg-surface-container rounded-lg border-none focus:ring-1 focus:ring-primary focus:bg-surface-container-lowest transition-all duration-200 text-on-surface placeholder:text-outline text-sm"
                 value={password}
+                disabled={loading}
                 onChange={(e) => setPassword(e.target.value)}
                 required
                 type="password"

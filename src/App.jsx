@@ -21,6 +21,7 @@ import {
   createWorkspace
 } from './lib/queries.js';
 import Login, { PasswordReset } from './components/Login.jsx';
+import TeamChat from './components/TeamChat.jsx';
 import Modal, { PromptDialog } from './components/Modal.jsx';
 import './App.css';
 
@@ -504,6 +505,7 @@ export default function App() {
   // Bootstrap auth
   useEffect(() => {
     let unsub = null;
+    let authBootstrapTimer;
 
     async function bootstrap() {
       setIsBootstrapping(true);
@@ -593,12 +595,15 @@ export default function App() {
         window.location.hash = 'login';
       }
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
-        bootstrap();
+        // Leave the SDK's auth notification/lock before making more auth calls.
+        window.clearTimeout(authBootstrapTimer);
+        authBootstrapTimer = window.setTimeout(() => { void bootstrap(); }, 0);
       }
     }) : { data: null };
     unsub = data?.subscription;
 
     return () => {
+      window.clearTimeout(authBootstrapTimer);
       try {
         unsub?.unsubscribe?.();
       } catch {
@@ -756,6 +761,10 @@ export default function App() {
           >
             <span className="material-symbols-outlined">dashboard</span>
             <span className="text-sm">Dashboard</span>
+          </a>
+          <a href="#chat" data-nav-route="chat" className="flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-high rounded-md transition-colors duration-200">
+            <span className="material-symbols-outlined">chat</span>
+            <span className="text-sm">Team chat</span>
           </a>
           <a
             href="#notes"
@@ -1024,7 +1033,7 @@ export default function App() {
               </div>
             </div>
           ) : (
-            <LegacyRenderer renderer={renderer} routeKey={routeKey} route={route} />
+            route.path === 'chat' ? <TeamChat key={AppState.workspace?.id} workspace={AppState.workspace} user={AppState.user} /> : <LegacyRenderer renderer={renderer} routeKey={routeKey} route={route} />
           )}
         </div>
       </main>

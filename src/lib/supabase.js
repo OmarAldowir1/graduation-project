@@ -11,7 +11,7 @@ export async function getSession() {
 
 export async function signIn(email, password) {
   const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  return { user: data?.user || null, error };
+  return { user: data?.user || null, session: data?.session || null, error };
 }
 
 export async function signUp(email, password, name) {
@@ -20,7 +20,7 @@ export async function signUp(email, password, name) {
     password,
     options: { data: { full_name: name } }
   });
-  return { user: data?.user || null, error };
+  return { user: data?.user || null, session: data?.session || null, error };
 }
 
 export async function signInWithGoogle() {

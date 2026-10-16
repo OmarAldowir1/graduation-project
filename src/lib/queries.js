@@ -3,6 +3,7 @@
 // ============================================
 
 import { supabase } from './supabase.js';
+import { saveWorkspaceInvitation } from './workspaceInvitations.js';
 
 // ============================================
 // USER QUERIES
@@ -24,22 +25,7 @@ export async function updateUserProfile(userId, updates) {
 }
 
 export async function createWorkspaceInvitation(workspaceId, email, role = 'editor', invitedBy) {
-  const { data, error } = await supabase
-    .from('workspace_invitations')
-    .upsert(
-      {
-        workspace_id: workspaceId,
-        email: email.trim().toLowerCase(),
-        role,
-        invited_by: invitedBy,
-        token: crypto.randomUUID(),
-        accepted_at: null
-      },
-      { onConflict: 'workspace_id,email' }
-    )
-    .select('id, workspace_id, email, role, token, created_at')
-    .single();
-  return { data, error };
+  return saveWorkspaceInvitation(supabase, workspaceId, email, role, invitedBy);
 }
 
 export async function getWorkspaceInvitations(workspaceId) {
