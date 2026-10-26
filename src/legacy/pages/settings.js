@@ -419,9 +419,23 @@ export async function renderSettings(container) {
   document.getElementById('invite-member-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (!workspaceId) return showToast('No workspace is selected', 'error');
+    if (!isWorkspaceOwner) return showToast('Only the workspace owner can invite members.', 'error');
     const emailInput = document.getElementById('invite-member-email');
     const roleInput = document.getElementById('invite-member-role');
-    const { data: invitation, error } = await createWorkspaceInvitation(workspaceId, emailInput.value, roleInput.value, userId);
+    const submit = event.currentTarget.querySelector('button[type="submit"]') || event.currentTarget.querySelector('button');
+    if (submit.disabled) return;
+    submit.disabled = true;
+    submit.textContent = 'Creating invitation…';
+    let result;
+    try {
+      result = await createWorkspaceInvitation(workspaceId, emailInput.value, roleInput.value, userId);
+    } catch (error) {
+      return showToast(`Could not invite member: ${error.message}`, 'error');
+    } finally {
+      submit.disabled = false;
+      submit.textContent = 'Invite';
+    }
+    const { data: invitation, error } = result;
     if (error) return showToast(`Could not invite member: ${error.message}`, 'error');
     const inviteUrl = `${window.location.origin}${window.location.pathname}#invite/${invitation.token}`;
     try {

@@ -24,8 +24,23 @@ export async function renderNotes(container) {
     return;
   }
 
-  let currentPage = pages.length > 0 ? pages[0] : null;
+  // Preserve selected page across re-renders
+  let currentPage = (container.__motionCurrentPageId && pages.find((p) => p.id === container.__motionCurrentPageId)) || (pages.length > 0 ? pages[0] : null);
+  container.__motionCurrentPageId = currentPage?.id || null;
   const userName = AppState.profile?.name || 'You';
+
+  // Sort pages according to selected sort mode before building hierarchy
+  const sortMode = container.__motionSortMode || 'updated';
+  pages.sort((left, right) => {
+    if (sortMode === 'title') return (left.title || '').localeCompare(right.title || '');
+    if (sortMode === 'favorite') {
+      return (Number(right.is_favorite === true) - Number(left.is_favorite === true)) || (right.updated_at || '').localeCompare(left.updated_at || '');
+    }
+    return (right.updated_at || '').localeCompare(left.updated_at || '');
+  });
+
+  const { roots } = buildNotesHierarchy(pages);
+  const expandedSet = getExpandedFolderSet();
 
   container.innerHTML = `
     <div class="flex flex-1 min-h-0">
@@ -35,50 +50,42 @@ export async function renderNotes(container) {
             <h3 class="font-bold text-sm text-on-surface">All Notes</h3>
             <span class="text-[10px] text-on-surface-variant" id="notes-visible-count">${pages.length}</span>
           </div>
-          <button id="btn-new-note-page" class="p-1 hover:bg-surface-container-high rounded transition-colors">
+          <button id="btn-new-note-page" class="p-1 hover:bg-surface-container-high rounded transition-colors" title="New Note">
             <span class="material-symbols-outlined text-sm">add</span>
           </button>
         </div>
-        <label class="mx-3 mb-3 flex items-center gap-2 px-3 py-2 bg-surface-container rounded-lg text-xs text-on-surface-variant">
+        <label class="mx-3 mb-2 flex items-center gap-2 px-3 py-2 bg-surface-container rounded-lg text-xs text-on-surface-variant">
           <span class="material-symbols-outlined text-sm">search</span>
           <input id="notes-search" class="min-w-0 flex-1 bg-transparent border-none outline-none text-on-surface placeholder:text-on-surface-variant/60" type="search" placeholder="Find notes..." />
         </label>
-        <label class="mx-3 mb-3 flex items-center gap-2 text-xs text-on-surface-variant">
-          <input id="notes-favorites-only" type="checkbox" />
-          Favorites only
-        </label>
-        <select id="notes-sort" class="mx-3 mb-3 w-[calc(100%-1.5rem)] px-3 py-2 bg-surface-container rounded-lg border-none outline-none text-xs text-on-surface-variant" aria-label="Sort notes">
-          <option value="updated">Recently updated</option>
-          <option value="title">Title A–Z</option>
-          <option value="favorite">Favorites first</option>
-        </select>
+        <div class="mx-3 mb-2 flex items-center justify-between gap-2">
+          <label class="flex items-center gap-1.5 text-xs text-on-surface-variant cursor-pointer select-none">
+            <input id="notes-favorites-only" type="checkbox" class="rounded border-outline-variant text-primary focus:ring-0" />
+            Favorites only
+          </label>
+          <select id="notes-sort" class="px-2 py-1 bg-surface-container rounded text-[11px] border-none outline-none text-on-surface-variant" aria-label="Sort notes">
+            <option value="updated" ${sortMode === 'updated' ? 'selected' : ''}>Recently updated</option>
+            <option value="title" ${sortMode === 'title' ? 'selected' : ''}>Title A–Z</option>
+            <option value="favorite" ${sortMode === 'favorite' ? 'selected' : ''}>Favorites first</option>
+          </select>
+        </div>
+
         <div class="flex-1 overflow-y-auto px-2 pb-4 space-y-1" id="notes-page-list">
-          <div id="notes-root-drop" class="px-3 py-2 text-[11px] uppercase tracking-wider text-on-surface-variant/60 rounded-lg border border-dashed border-transparent transition-colors" aria-label="Drop here to move a page to the root level">Root pages</div>
+          <!-- Root drop zone for un-nesting files -->
+          <div
+            id="notes-root-drop"
+            class="px-2.5 py-1.5 text-[11px] text-on-surface-variant/60 rounded-lg border border-dashed border-outline-variant/30 transition-all flex items-center gap-1.5 cursor-pointer hover:border-primary/50"
+            aria-label="Drop here to move a page to the root level"
+            title="Drop here to move page to root level"
+          >
+            <span class="material-symbols-outlined text-sm opacity-70">drive_file_move</span>
+            <span class="truncate">Root pages (Drop here to un-nest)</span>
+          </div>
+
           ${
-            pages.length === 0
+            roots.length === 0
               ? `<div class="text-center py-8 text-on-surface-variant/40 text-xs px-4">No pages yet. Create one to start writing.</div>`
-              : pages
-                  .map(
-                    (page, i) => `
-            <div role="button" tabindex="0" draggable="true" style="padding-left:${Math.min(4, getPageDepth(page, pages)) * 0.75 + 0.75}rem" class="w-full text-left px-3 py-2.5 rounded-lg text-sm transition-colors ${
-              i === 0
-                ? 'bg-white shadow-sm font-semibold text-on-surface'
-                : 'text-on-surface-variant hover:bg-surface-container-low'
-            }" data-page-id="${page.id}" data-page-title="${escapeHtml(String(page.title || '').toLowerCase())}" data-page-favorite="${page.is_favorite ? 'true' : 'false'}" data-page-updated="${page.updated_at || ''}">
-              <div class="flex items-center gap-2">
-                <span class="text-base">${escapeHtml(page.parent_id ? '↳' : page.icon || '📄')}</span>
-                <div class="min-w-0">
-                  <p class="truncate font-medium">${escapeHtml(page.title || 'Untitled')}</p>
-                  <p class="text-[10px] text-on-surface-variant truncate">${timeAgo(page.updated_at)}</p>
-                </div>
-                <button type="button" class="toggle-note-favorite ml-auto text-tertiary hover:text-primary" data-toggle-favorite="${page.id}" data-favorite="${page.is_favorite ? 'true' : 'false'}" aria-label="${page.is_favorite ? 'Remove from favorites' : 'Add to favorites'}">
-                  <span class="material-symbols-outlined text-sm">${page.is_favorite ? 'star' : 'star_outline'}</span>
-                </button>
-              </div>
-            </div>
-          `
-                  )
-                  .join('')
+              : renderNoteTree(roots, pages, currentPage?.id, expandedSet, 0)
           }
         </div>
       </div>
@@ -126,10 +133,10 @@ export async function renderNotes(container) {
       saveTimeout = setTimeout(async () => {
         const content = { ...(page.content || {}), html: sanitizeHtml(editorEl.innerHTML || '') };
         const title = titleEl.textContent || 'Untitled';
-      writeNoteDraft(page.id, { title, html: content.html });
+        writeNoteDraft(page.id, { title, html: content.html });
         const { error } = await updatePage(page.id, { title, content });
         if (status) status.textContent = error ? 'Save failed' : 'Saved';
-      if (!error) clearNoteDraft(page.id);
+        if (!error) clearNoteDraft(page.id);
         if (error) showToast('Failed to save: ' + error.message, 'error');
       }, 1500);
     }
@@ -170,7 +177,10 @@ export async function renderNotes(container) {
     applyNotesFilter(container, event.target.value);
   });
   container.querySelector('#notes-favorites-only')?.addEventListener('change', async () => applyNotesFilter(container));
-  container.querySelector('#notes-sort')?.addEventListener('change', async () => applyNotesFilter(container));
+  container.querySelector('#notes-sort')?.addEventListener('change', async (e) => {
+    container.__motionSortMode = e.target.value;
+    renderNotes(container);
+  });
 
   container.querySelectorAll('[data-note-tool]').forEach((button) => {
     button.addEventListener('click', async () => {
@@ -193,7 +203,7 @@ export async function renderNotes(container) {
   });
 
   container.querySelector('#btn-new-note-page')?.addEventListener('click', async () => {
-    const title = await requestInput('Note title:') || 'Untitled';
+    const title = (await requestInput('Note title:')) || 'Untitled';
     const { error } = await createPage(workspaceId, title, 'note');
     if (error) {
       showToast('Failed to create note: ' + error.message, 'error');
@@ -203,17 +213,69 @@ export async function renderNotes(container) {
     renderNotes(container);
   });
 
-  container.querySelectorAll('[data-page-id]').forEach((btn) => {
-    btn.addEventListener('click', async () => {
+  // Toggle Folder Buttons (side arrow -> points down on expand)
+  container.querySelectorAll('.toggle-folder-btn').forEach((btn) => {
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const folderId = btn.dataset.toggleFolder;
+      const childContainer = container.querySelector(`.note-children-container[data-children-of="${folderId}"]`);
+      const arrowIcon = btn.querySelector('.note-folder-arrow');
+      const folderIcon = btn.closest('.note-row')?.querySelector('.folder-state-icon');
+      const expSet = getExpandedFolderSet();
+
+      if (childContainer) {
+        const isHidden = childContainer.classList.contains('hidden');
+        if (isHidden) {
+          childContainer.classList.remove('hidden');
+          arrowIcon?.classList.add('rotate-90', 'is-expanded');
+          if (folderIcon) folderIcon.textContent = 'folder_open';
+          expSet.add(folderId);
+        } else {
+          childContainer.classList.add('hidden');
+          arrowIcon?.classList.remove('rotate-90', 'is-expanded');
+          if (folderIcon) folderIcon.textContent = 'folder';
+          expSet.delete(folderId);
+        }
+        saveExpandedFolderSet(expSet);
+      }
+    });
+  });
+
+  // Page Row Selection & Drag and Drop
+  container.querySelectorAll('.note-row').forEach((btn) => {
+    btn.addEventListener('click', async (event) => {
+      if (event.target.closest('.toggle-folder-btn') || event.target.closest('.toggle-note-favorite')) {
+        return;
+      }
+
       const pageId = btn.dataset.pageId;
+      const hasChildren = btn.dataset.hasChildren === 'true';
+
+      // When clicking parent folder, expand it if currently collapsed
+      if (hasChildren) {
+        const childContainer = container.querySelector(`.note-children-container[data-children-of="${pageId}"]`);
+        const arrowBtn = btn.querySelector('.toggle-folder-btn');
+        const arrowIcon = arrowBtn?.querySelector('.note-folder-arrow');
+        const folderIcon = btn.querySelector('.folder-state-icon');
+        if (childContainer && childContainer.classList.contains('hidden')) {
+          childContainer.classList.remove('hidden');
+          arrowIcon?.classList.add('rotate-90', 'is-expanded');
+          if (folderIcon) folderIcon.textContent = 'folder_open';
+          const expSet = getExpandedFolderSet();
+          expSet.add(pageId);
+          saveExpandedFolderSet(expSet);
+        }
+      }
+
+      container.__motionCurrentPageId = pageId;
       const { data: page } = await getPage(pageId);
       if (page) {
-        container.querySelectorAll('#notes-page-list [data-page-id]').forEach((item) => {
-          item.classList.remove('bg-white', 'shadow-sm', 'font-semibold', 'text-on-surface');
-          item.classList.add('text-on-surface-variant', 'hover:bg-surface-container-low');
+        container.querySelectorAll('#notes-page-list .note-row').forEach((item) => {
+          item.classList.remove('bg-white', 'dark:bg-stone-800', 'shadow-sm', 'font-semibold', 'text-on-surface', 'ring-1', 'ring-outline-variant/15');
+          item.classList.add('text-on-surface-variant', 'hover:bg-surface-container-low', 'hover:text-on-surface');
         });
-        btn.classList.remove('text-on-surface-variant', 'hover:bg-surface-container-low');
-        btn.classList.add('bg-white', 'shadow-sm', 'font-semibold', 'text-on-surface');
+        btn.classList.remove('text-on-surface-variant', 'hover:bg-surface-container-low', 'hover:text-on-surface');
+        btn.classList.add('bg-white', 'dark:bg-stone-800', 'shadow-sm', 'font-semibold', 'text-on-surface', 'ring-1', 'ring-outline-variant/15');
         currentPage = page;
         const editorArea = container.querySelector('.flex-1.overflow-y-auto');
         if (editorArea) {
@@ -223,43 +285,77 @@ export async function renderNotes(container) {
         }
       }
     });
-    btn.addEventListener('keydown', async (event) => {
+
+    btn.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {
         event.preventDefault();
         btn.click();
       }
     });
-    btn.addEventListener('dragstart', async (event) => {
+
+    btn.addEventListener('dragstart', (event) => {
       event.dataTransfer.effectAllowed = 'move';
       event.dataTransfer.setData('text/plain', btn.dataset.pageId);
-      btn.classList.add('opacity-50');
+      btn.classList.add('opacity-40');
     });
-    btn.addEventListener('dragend', async () => btn.classList.remove('opacity-50'));
-    btn.addEventListener('dragover', async (event) => {
+
+    btn.addEventListener('dragend', () => {
+      btn.classList.remove('opacity-40');
+      container.querySelectorAll('.note-row').forEach((r) => r.classList.remove('drag-over', 'ring-2', 'ring-primary', 'bg-primary/10'));
+    });
+
+    btn.addEventListener('dragover', (event) => {
       const draggedId = event.dataTransfer.types.includes('text/plain') ? event.dataTransfer.getData('text/plain') : null;
-      if (!draggedId || draggedId === btn.dataset.pageId) return;
+      if (draggedId === btn.dataset.pageId) return;
       event.preventDefault();
-      btn.classList.add('ring-2', 'ring-primary');
+      event.dataTransfer.dropEffect = 'move';
+      btn.classList.add('drag-over', 'ring-2', 'ring-primary', 'bg-primary/10');
     });
-    btn.addEventListener('dragleave', async () => btn.classList.remove('ring-2', 'ring-primary'));
+
+    btn.addEventListener('dragleave', (event) => {
+      if (!btn.contains(event.relatedTarget)) {
+        btn.classList.remove('drag-over', 'ring-2', 'ring-primary', 'bg-primary/10');
+      }
+    });
+
     btn.addEventListener('drop', async (event) => {
       event.preventDefault();
-      btn.classList.remove('ring-2', 'ring-primary');
+      event.stopPropagation();
+      btn.classList.remove('drag-over', 'ring-2', 'ring-primary', 'bg-primary/10');
+
       const draggedId = event.dataTransfer.getData('text/plain');
-      const draggedPage = pages.find((page) => page.id === draggedId);
-      const targetPage = pages.find((page) => page.id === btn.dataset.pageId);
+      const targetId = btn.dataset.pageId;
+
+      if (!draggedId || draggedId === targetId) return;
+
+      const draggedPage = pages.find((p) => p.id === draggedId);
+      const targetPage = pages.find((p) => p.id === targetId);
+
       if (!draggedPage || !targetPage) return;
-      if (draggedPage.id === targetPage.id || isPageDescendant(targetPage.id, draggedPage.id, pages)) {
-        showToast('A page cannot be nested inside itself or its descendants', 'error');
+
+      if (isPageDescendant(targetPage.id, draggedPage.id, pages)) {
+        showToast('Cannot move a folder inside itself or one of its subpages', 'error');
         return;
       }
+
       const { error: moveError } = await updatePage(draggedPage.id, { parent_id: targetPage.id });
-      if (moveError) return showToast(`Could not nest page: ${moveError.message}`, 'error');
-      showToast(`Moved under “${targetPage.title || 'Untitled'}”`, 'success');
+      if (moveError) {
+        showToast(`Failed to move page: ${moveError.message}`, 'error');
+        return;
+      }
+
+      // Automatically expand target folder so user immediately sees the dropped child
+      const expSet = getExpandedFolderSet();
+      expSet.add(targetPage.id);
+      saveExpandedFolderSet(expSet);
+
+      showToast(`Moved page into "${targetPage.title || 'Untitled'}" successfully`, 'success');
+      window.dispatchEvent(new CustomEvent('motion:page-changed', { detail: draggedPage.id }));
       renderNotes(container);
     });
   });
 
+  // Favorite buttons
   container.querySelectorAll('.toggle-note-favorite').forEach((button) => {
     button.addEventListener('click', async (event) => {
       event.stopPropagation();
@@ -274,45 +370,248 @@ export async function renderNotes(container) {
     });
   });
 
+  // Root drop zone
   const rootDrop = container.querySelector('#notes-root-drop');
-  rootDrop?.addEventListener('dragover', async (event) => {
+  rootDrop?.addEventListener('dragover', (event) => {
     if (!event.dataTransfer.types.includes('text/plain')) return;
     event.preventDefault();
-    rootDrop.classList.add('border-primary', 'bg-primary-container/30', 'text-primary');
+    event.dataTransfer.dropEffect = 'move';
+    rootDrop.classList.add('border-primary', 'bg-primary/10', 'text-primary');
   });
-  rootDrop?.addEventListener('dragleave', async () => rootDrop.classList.remove('border-primary', 'bg-primary-container/30', 'text-primary'));
+  rootDrop?.addEventListener('dragleave', (event) => {
+    if (!rootDrop.contains(event.relatedTarget)) {
+      rootDrop.classList.remove('border-primary', 'bg-primary/10', 'text-primary');
+    }
+  });
   rootDrop?.addEventListener('drop', async (event) => {
     event.preventDefault();
-    rootDrop.classList.remove('border-primary', 'bg-primary-container/30', 'text-primary');
+    rootDrop.classList.remove('border-primary', 'bg-primary/10', 'text-primary');
     const draggedId = event.dataTransfer.getData('text/plain');
     const draggedPage = pages.find((page) => page.id === draggedId);
     if (!draggedPage || !draggedPage.parent_id) return;
     const { error: moveError } = await updatePage(draggedPage.id, { parent_id: null });
     if (moveError) return showToast(`Could not move page: ${moveError.message}`, 'error');
-    showToast('Moved to root pages', 'success');
+    showToast('Moved page to root level', 'success');
+    window.dispatchEvent(new CustomEvent('motion:page-changed', { detail: draggedPage.id }));
     renderNotes(container);
   });
+}
+
+const NOTES_EXPANDED_KEY = 'motion-notes-expanded-folders';
+
+function getExpandedFolderSet() {
+  try {
+    const raw = localStorage.getItem(NOTES_EXPANDED_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveExpandedFolderSet(set) {
+  try {
+    localStorage.setItem(NOTES_EXPANDED_KEY, JSON.stringify([...set]));
+  } catch {
+    // Ignore storage errors
+  }
+}
+
+function buildNotesHierarchy(pages) {
+  const map = new Map();
+  pages.forEach((p) => map.set(p.id, { ...p, children: [] }));
+  const roots = [];
+
+  pages.forEach((p) => {
+    const node = map.get(p.id);
+    if (p.parent_id && map.has(p.parent_id)) {
+      map.get(p.parent_id).children.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+
+  return { roots, map };
+}
+
+function renderNoteTree(nodes, pages, currentSelectedId, expandedSet, depth = 0) {
+  if (!nodes || nodes.length === 0) return '';
+
+  return nodes
+    .map((node) => {
+      const hasChildren = node.children && node.children.length > 0;
+      const isExpanded = expandedSet.has(node.id);
+      const isSelected = currentSelectedId === node.id;
+      const isNested = depth > 0;
+
+      // Font size: Root notes have text-sm, nested notes have text-xs (slightly smaller font!)
+      const fontClass = isNested ? 'text-xs' : 'text-sm font-medium';
+      const pyClass = isNested ? 'py-1.5' : 'py-2';
+      const iconSizeClass = isNested ? 'text-[15px]' : 'text-base';
+      const timeClass = isNested ? 'text-[9px]' : 'text-[10px]';
+
+      return `
+        <div class="note-node-wrapper w-full" data-node-id="${node.id}">
+          <div
+            role="button"
+            tabindex="0"
+            draggable="true"
+            data-page-id="${node.id}"
+            data-page-title="${escapeHtml(String(node.title || '').toLowerCase())}"
+            data-page-favorite="${node.is_favorite ? 'true' : 'false'}"
+            data-page-updated="${node.updated_at || ''}"
+            data-has-children="${hasChildren ? 'true' : 'false'}"
+            data-depth="${depth}"
+            class="note-row group w-full text-left flex items-center gap-1.5 px-2.5 ${pyClass} rounded-lg ${fontClass} transition-colors duration-150 cursor-pointer select-none ${
+              isSelected
+                ? 'bg-white dark:bg-stone-800 shadow-sm font-semibold text-on-surface ring-1 ring-outline-variant/15'
+                : 'text-on-surface-variant hover:bg-surface-container-low hover:text-on-surface'
+            }"
+          >
+            <!-- Arrow toggle if parent folder (points down when expanded) -->
+            ${
+              hasChildren
+                ? `
+              <button
+                type="button"
+                class="toggle-folder-btn p-1 -ml-1.5 rounded hover:bg-surface-container-high text-on-surface-variant/70 hover:text-on-surface flex items-center justify-center flex-shrink-0"
+                data-toggle-folder="${node.id}"
+                title="${isExpanded ? 'Collapse folder' : 'Expand folder'}"
+                aria-label="${isExpanded ? 'Collapse folder' : 'Expand folder'}"
+              >
+                <span class="material-symbols-outlined text-[17px] note-folder-arrow ${isExpanded ? 'is-expanded rotate-90' : ''}">
+                  chevron_right
+                </span>
+              </button>
+            `
+                : `
+              <span class="w-5 h-5 flex-shrink-0 -ml-1.5 inline-block"></span>
+            `
+            }
+
+            <!-- Folder or Page Icon -->
+            <span class="flex-shrink-0 flex items-center justify-center mr-0.5">
+              ${
+                hasChildren
+                  ? `
+                <span class="material-symbols-outlined ${iconSizeClass} text-amber-500 folder-state-icon flex-shrink-0">
+                  ${isExpanded ? 'folder_open' : 'folder'}
+                </span>
+              `
+                  : node.icon
+                  ? `<span class="${iconSizeClass}">${escapeHtml(node.icon)}</span>`
+                  : `
+                <span class="material-symbols-outlined ${iconSizeClass} opacity-70 flex-shrink-0">
+                  ${node.page_type === 'kanban' ? 'view_kanban' : node.page_type === 'database' ? 'local_library' : 'description'}
+                </span>
+              `
+              }
+            </span>
+
+            <!-- Title & Timestamp -->
+            <div class="min-w-0 flex-1">
+              <p class="truncate leading-tight ${isNested ? 'text-[12px] font-normal' : 'text-sm font-medium'}">${escapeHtml(node.title || 'Untitled')}</p>
+              <p class="${timeClass} text-on-surface-variant/60 truncate leading-none mt-0.5">${timeAgo(node.updated_at)}</p>
+            </div>
+
+            <!-- Favorite star button -->
+            <button
+              type="button"
+              class="toggle-note-favorite ml-auto p-1 rounded transition-opacity flex-shrink-0 ${
+                node.is_favorite ? 'text-amber-400 opacity-100' : 'text-on-surface-variant/30 hover:text-amber-400 opacity-0 group-hover:opacity-100'
+              }"
+              data-toggle-favorite="${node.id}"
+              data-favorite="${node.is_favorite ? 'true' : 'false'}"
+              aria-label="${node.is_favorite ? 'Remove from favorites' : 'Add to favorites'}"
+            >
+              <span class="material-symbols-outlined text-sm">${node.is_favorite ? 'star' : 'star_outline'}</span>
+            </button>
+          </div>
+
+          <!-- Dropdown/Nested children list (indented with slightly smaller font) -->
+          ${
+            hasChildren
+              ? `
+            <div
+              class="note-children-container relative border-l-2 border-outline-variant/15 space-y-0.5 mt-0.5 mb-1 ${
+                isExpanded ? '' : 'hidden'
+              }"
+              data-children-of="${node.id}"
+              style="margin-left: 1.15rem; padding-left: 0.25rem;"
+            >
+              ${renderNoteTree(node.children, pages, currentSelectedId, expandedSet, depth + 1)}
+            </div>
+          `
+              : ''
+          }
+        </div>
+      `;
+    })
+    .join('');
 }
 
 function applyNotesFilter(container, queryValue) {
   const query = (queryValue ?? container.querySelector('#notes-search')?.value ?? '').trim().toLowerCase();
   const favoritesOnly = Boolean(container.querySelector('#notes-favorites-only')?.checked);
-  const sort = container.querySelector('#notes-sort')?.value || 'updated';
-  const list = container.querySelector('#notes-page-list');
-  const buttons = [...container.querySelectorAll('#notes-page-list [data-page-id]')];
-  buttons.sort((left, right) => {
-    if (sort === 'title') return left.dataset.pageTitle.localeCompare(right.dataset.pageTitle);
-    if (sort === 'favorite') return Number(right.dataset.pageFavorite === 'true') - Number(left.dataset.pageFavorite === 'true') || right.dataset.pageUpdated.localeCompare(left.dataset.pageUpdated);
-    return right.dataset.pageUpdated.localeCompare(left.dataset.pageUpdated);
+  const allRows = [...container.querySelectorAll('.note-row')];
+
+  if (!query && !favoritesOnly) {
+    const expSet = getExpandedFolderSet();
+    allRows.forEach((row) => {
+      const wrapper = row.closest('.note-node-wrapper');
+      if (wrapper) wrapper.hidden = false;
+    });
+    container.querySelectorAll('.note-children-container').forEach((childContainer) => {
+      const folderId = childContainer.dataset.childrenOf;
+      const isExpanded = expSet.has(folderId);
+      childContainer.classList.toggle('hidden', !isExpanded);
+    });
+    const count = container.querySelector('#notes-visible-count');
+    if (count) count.textContent = allRows.length;
+    return;
+  }
+
+  let matchCount = 0;
+  const matchMap = new Map();
+  allRows.forEach((row) => {
+    const title = row.dataset.pageTitle || '';
+    const fav = row.dataset.pageFavorite === 'true';
+    const matchesQuery = !query || title.includes(query);
+    const matchesFav = !favoritesOnly || fav;
+    const isDirectMatch = matchesQuery && matchesFav;
+    matchMap.set(row.dataset.pageId, isDirectMatch);
+    if (isDirectMatch) matchCount++;
   });
-  buttons.forEach((button) => list?.appendChild(button));
-  buttons.forEach((button) => {
-    const matchesQuery = !query || button.dataset.pageTitle.includes(query);
-    const matchesFavorite = !favoritesOnly || button.dataset.pageFavorite === 'true';
-    button.hidden = !(matchesQuery && matchesFavorite);
+
+  allRows.forEach((row) => {
+    const pageId = row.dataset.pageId;
+    const isMatch = matchMap.get(pageId);
+    const wrapper = row.closest('.note-node-wrapper');
+
+    if (!wrapper) return;
+
+    if (isMatch) {
+      wrapper.hidden = false;
+      let parentContainer = wrapper.parentElement?.closest('.note-children-container');
+      while (parentContainer) {
+        parentContainer.classList.remove('hidden');
+        const parentWrapper = parentContainer.closest('.note-node-wrapper');
+        if (parentWrapper) parentWrapper.hidden = false;
+        parentContainer = parentWrapper?.parentElement?.closest('.note-children-container');
+      }
+    } else {
+      const hasMatchingDescendant =
+        wrapper.querySelector('.note-children-container') &&
+        [...wrapper.querySelectorAll('.note-row')].some((r) => r.dataset.pageId !== pageId && matchMap.get(r.dataset.pageId));
+      wrapper.hidden = !hasMatchingDescendant;
+      if (hasMatchingDescendant) {
+        const directChildContainer = wrapper.querySelector(`:scope > .note-children-container`);
+        if (directChildContainer) directChildContainer.classList.remove('hidden');
+      }
+    }
   });
+
   const count = container.querySelector('#notes-visible-count');
-  if (count) count.textContent = buttons.filter((button) => !button.hidden).length;
+  if (count) count.textContent = matchCount;
 }
 
 function getPageDepth(page, pages, seen = new Set()) {

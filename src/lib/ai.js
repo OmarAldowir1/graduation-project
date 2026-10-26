@@ -1,8 +1,5 @@
-// Optional AI adapter for Motion.
-// Configure VITE_AI_ENDPOINT to connect a server-side provider. Never put a
-// provider secret in VITE_* variables; browser-exposed variables are public.
-
-const endpoint = import.meta.env.VITE_AI_ENDPOINT;
+// Deterministic local text tools, not generative AI. No network/provider calls.
+// Generative page drafts use only the guarded page-ai Edge Function.
 
 function localAssist(text, action) {
   const clean = String(text || '').replace(/\s+/g, ' ').trim();
@@ -29,26 +26,5 @@ function localAssist(text, action) {
 }
 
 export async function assistWithText(text, action) {
-  if (!endpoint) return { text: localAssist(text, action), source: 'local' };
-
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), 12000);
-
-  try {
-    const response = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, text }),
-      signal: controller.signal
-    });
-    if (!response.ok) throw new Error(`AI endpoint returned ${response.status}`);
-    const payload = await response.json();
-    const result = payload.text || payload.result || payload.output;
-    if (!result) throw new Error('AI endpoint returned an empty response');
-    return { text: String(result), source: 'remote' };
-  } catch (error) {
-    return { text: localAssist(text, action), source: 'local', error };
-  } finally {
-    window.clearTimeout(timeout);
-  }
+  return { text: localAssist(text, action), source: 'local' };
 }

@@ -2,9 +2,15 @@
 
 Motion is a responsive, Notion-style workspace with pages, notes, Kanban tasks, database views, comments, notifications, search, templates, backups, and optional AI assistance.
 
+## In-page AI assistant
+
+Open **AI page assistant**, describe what you need and click **Generate draft**. Review/select the proposed blocks, refine the draft, discard it, or Apply. No Colab, JSON editing, or user API key is required. Existing content is preserved, with guarded Undo after Apply.
+
+In local development, the Vite server uses the token in the ignored `supabase/functions/.env` file on this Mac. The browser never receives that token. Hosted deployments can use the authenticated Supabase `cloudflare-page-ai` and `text-ai` Edge Functions only if the owner separately authorizes storing the token in Supabase. Both paths use one fixed Workers AI model on an owner-confirmed Workers Free account, with no paid fallback. See [free AI setup](docs/FREE_AI_SETUP.md). Historical Colab files remain available but are no longer part of the app workflow.
+
 ## Run from VS Code
 
-1. Open the `G-Project` folder in VS Code.
+1. Open the `G-project-main` folder in VS Code.
 2. Open **Terminal → New Terminal**.
 3. Confirm Node.js is installed:
 
@@ -25,7 +31,7 @@ Motion is a responsive, Notion-style workspace with pages, notes, Kanban tasks, 
    npm run dev
    ```
 
-6. Open the URL shown by Vite, normally `http://localhost:5173`.
+6. Open the URL shown by Vite, normally `http://localhost:5173`. When the server-only `supabase/functions/.env` file is configured, AI works locally without uploading its token to Supabase.
 
 ## Supabase setup
 
@@ -57,4 +63,4 @@ npm run preview   # preview the production build
 - Command palette/search (`Cmd/Ctrl+K`) and new-page shortcut (`Cmd/Ctrl+N`).
 - Realtime task/comment/notification updates and workspace presence when Supabase is configured.
 - JSON workspace backup and restore from Settings.
-- Optional server-side AI proxy for summaries, action-item extraction, and writing improvements, with a local fallback.
+- Page drafts, chat, and editor text actions through guarded Cloudflare Workers AI Free functions.

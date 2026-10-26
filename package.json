@@ -9,11 +9,15 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "test:ai": "node --test tests/ai-blocks.test.js tests/page-ai-handler.test.js tests/text-ai-handler.test.js",
     "preview": "vite preview",
     "check": "npm run lint && npm run build"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.105.1",
+    "jszip": "^3.10.2",
+    "pdfjs-dist": "^5.7.284",
+    "quill": "^2.0.3",
     "react": "^19.2.5",
     "react-dom": "^19.2.5"
   },
