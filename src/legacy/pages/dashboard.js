@@ -1,14 +1,10 @@
-import { requestInput } from "../../lib/dialogs.js";
-// ============================================
-// MOTION — Dashboard Page Module (Legacy)
-// ============================================
-
+import { requestInput } from '../../lib/dialogs.js';
 import { AppState, setBreadcrumb, showToast } from '../app.js';
 import { getRecentPages, getTasks, getTaskCounts, createTask, toggleTask, timeAgo } from '../../lib/queries.js';
 import { escapeHtml } from '../../lib/sanitize.js';
 
 export async function renderDashboard(container) {
-  setBreadcrumb('Dashboard');
+  setBreadcrumb('Home');
 
   const [pagesResult, tasksResult, countsResult] = await Promise.all([
     getRecentPages(4, AppState.workspace?.id),
@@ -19,210 +15,95 @@ export async function renderDashboard(container) {
   const loadError = pagesResult.error || tasksResult.error || countsResult.error;
   if (loadError) {
     container.innerHTML = `<div class="error-state m-8"><span class="material-symbols-outlined">error</span><h3>Failed to load dashboard</h3><p>${escapeHtml(loadError.message || 'Please try again.')}</p><button id="dashboard-retry" class="mt-4 px-4 py-2 bg-primary text-on-primary rounded-lg text-sm font-semibold" type="button">Retry</button></div>`;
-    container.querySelector('#dashboard-retry')?.addEventListener('click', async () => renderDashboard(container));
+    container.querySelector('#dashboard-retry')?.addEventListener('click', () => renderDashboard(container));
     return;
   }
 
   const pages = pagesResult.data || [];
   const tasks = tasksResult.data || [];
   const counts = countsResult.data || { total: 0, todo: 0, in_progress: 0, done: 0, overdue: 0 };
-  const userName = AppState.profile?.name || AppState.user?.email?.split('@')[0] || 'there';
-  const safeUserName = escapeHtml(userName);
+  const safeName = escapeHtml(AppState.profile?.name || AppState.user?.email?.split('@')[0] || 'there');
   const pending = counts.todo + counts.in_progress;
+  const today = new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date());
+  const completedItems = [Boolean(AppState.workspace), pages.length > 0, counts.total > 0].filter(Boolean).length;
+  const progressPct = Math.round((completedItems / 3) * 100);
+  const pageCards = pages.map((page) => `
+    <a class="motion-page-card" href="#editor/${escapeHtml(page.id)}" aria-label="Open page ${escapeHtml(page.title || 'Untitled')}">
+      <span class="motion-page-icon" aria-hidden="true">${escapeHtml(page.icon || '📄')}</span>
+      <span class="motion-page-copy">
+        <span class="motion-page-type">${escapeHtml(page.page_type || 'note')}</span>
+        <strong>${escapeHtml(page.title || 'Untitled')}</strong>
+        <small>Edited ${escapeHtml(timeAgo(page.updated_at))}</small>
+      </span>
+      <span class="material-symbols-outlined motion-page-arrow" aria-hidden="true">arrow_outward</span>
+    </a>
+  `).join('');
 
-  // Calculate real checklist progress
-  const hasPages = pages.length > 0;
-  const hasTasks = counts.total > 0;
-  const hasWorkspace = !!AppState.workspace;
-  const checkItems = [hasWorkspace, hasPages, hasTasks];
-  const completedItems = checkItems.filter(Boolean).length;
-  const progressPct = Math.round((completedItems / checkItems.length) * 100);
+  const taskRows = tasks.slice(0, 4).map((task) => `
+    <div class="motion-task-row" data-dash-task data-task-id="${escapeHtml(task.id)}">
+      <button type="button" class="dashboard-task-toggle motion-task-check ${task.completed ? 'is-done' : ''}" data-task-id="${escapeHtml(task.id)}" data-completed="${Boolean(task.completed)}" aria-label="${escapeHtml(`${task.completed ? 'Reopen' : 'Complete'} ${task.title || 'task'}`)}">
+        <span class="material-symbols-outlined" aria-hidden="true">check</span>
+      </button>
+      <button type="button" class="motion-task-title ${task.completed ? 'is-done' : ''}" aria-label="Open task ${escapeHtml(task.title || 'Untitled task')}">${escapeHtml(task.title || 'Untitled task')}</button>
+      <span class="motion-task-date">${task.due_date ? escapeHtml(new Date(task.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })) : escapeHtml((task.status || 'todo').replace('_', ' '))}</span>
+    </div>
+  `).join('');
 
   container.innerHTML = `
-    <div class="p-8 max-w-7xl mx-auto w-full">
-      <section class="mb-12">
-        <h2 class="text-3xl font-extrabold tracking-tighter text-[#2d3433] dark:text-stone-100 mb-2 font-headline">Welcome back, ${safeUserName}.</h2>
-        <p class="text-on-surface-variant body-lg">Your workspace is harmonized and ready for your next move.</p>
+    <div class="motion-dashboard">
+      <section class="motion-hero" aria-labelledby="motion-hero-title">
+        <div class="motion-hero-content">
+          <p class="motion-eyebrow"><span class="motion-live-dot"></span> ${escapeHtml(today)} · ${escapeHtml(AppState.workspace?.name || 'My Workspace')}</p>
+          <h1 id="motion-hero-title">Your work, <em>in motion.</em></h1>
+          <p class="motion-hero-greeting">Welcome back, ${safeName}. ${pending ? `You have ${pending} task${pending === 1 ? '' : 's'} ready for your attention.` : 'Everything is caught up. Make space for your next idea.'}</p>
+          <div class="motion-hero-actions">
+            <button id="dashboard-hero-new-page" class="motion-hero-primary" type="button"><span class="material-symbols-outlined" aria-hidden="true">add</span> New page</button>
+            <button id="dashboard-hero-new-task" class="motion-hero-secondary" type="button"><span class="material-symbols-outlined" aria-hidden="true">add_task</span> Add task</button>
+          </div>
+        </div>
+        <div class="motion-hero-art" aria-hidden="true">
+          <div class="motion-art-orbit motion-art-orbit-one"></div>
+          <div class="motion-art-orbit motion-art-orbit-two"></div>
+          <div class="motion-art-card motion-art-card-back"><span class="material-symbols-outlined">view_kanban</span><span>Plan</span></div>
+          <div class="motion-art-card motion-art-card-front"><span class="material-symbols-outlined">auto_awesome</span><span>Create<br><strong>your next thing.</strong></span></div>
+        </div>
       </section>
 
-      <div class="grid grid-cols-1 md:grid-cols-12 gap-6">
+      <section class="motion-stats" aria-label="Workspace overview">
+        <div class="motion-stat"><span class="motion-stat-icon violet material-symbols-outlined" aria-hidden="true">description</span><div><strong>${pages.length}</strong><span>Recent pages</span></div></div>
+        <div class="motion-stat"><span class="motion-stat-icon amber material-symbols-outlined" aria-hidden="true">pending_actions</span><div><strong>${pending}</strong><span>Open tasks</span></div></div>
+        <div class="motion-stat"><span class="motion-stat-icon green material-symbols-outlined" aria-hidden="true">task_alt</span><div><strong>${counts.done}</strong><span>Completed</span></div></div>
+        <div class="motion-stat"><span class="motion-stat-icon blue material-symbols-outlined" aria-hidden="true">all_inclusive</span><div><strong>${counts.total}</strong><span>All tasks</span></div></div>
+      </section>
 
-        <div class="md:col-span-4 bg-surface-container-lowest rounded-xl p-6 shadow-sm flex flex-col">
-          <div class="flex items-center gap-2 mb-6">
-            <span class="material-symbols-outlined text-primary">task_alt</span>
-            <h3 class="font-bold tracking-tight text-on-surface">Getting Started</h3>
+      <div class="motion-dashboard-grid">
+        <section class="motion-dashboard-section motion-pages-section" aria-labelledby="motion-pages-title">
+          <div class="motion-section-heading"><div><p class="motion-section-kicker">YOUR SPACE</p><h2 id="motion-pages-title">Pick up where you left off</h2></div><a href="#notes">View all pages <span class="material-symbols-outlined" aria-hidden="true">arrow_forward</span></a></div>
+          <div class="motion-page-list">
+            ${pageCards || `<div class="motion-empty-card"><span class="material-symbols-outlined" aria-hidden="true">note_add</span><strong>Start with a blank page</strong><p>Capture an idea, build a plan, or keep a note.</p><button id="dashboard-create-page-btn" type="button">Create your first page</button></div>`}
           </div>
-          <ul class="space-y-4" id="checklist">
-            <li class="flex items-start gap-3 group ${hasPages ? 'cursor-default' : 'cursor-pointer'}" ${!hasPages ? 'id="checklist-create-page"' : ''}>
-              <div class="w-5 h-5 rounded ${hasPages ? 'bg-primary' : 'border-2 border-primary/20 group-hover:border-primary'} flex items-center justify-center mt-0.5">
-                ${hasPages ? '<span class="material-symbols-outlined text-white text-[12px] font-bold">check</span>' : ''}
-              </div>
-              <div>
-                <p class="text-sm font-medium ${hasPages ? 'text-on-surface-variant line-through' : 'text-on-surface'}">Create your first page</p>
-                <p class="text-xs text-on-surface-variant">${hasPages ? 'Great! You have pages.' : 'Organize ideas into meaningful documents.'}</p>
-              </div>
-            </li>
-            <li class="flex items-start gap-3 group cursor-default">
-              <div class="w-5 h-5 rounded ${hasWorkspace ? 'bg-primary' : 'border-2 border-primary/20'} flex items-center justify-center mt-0.5">
-                ${hasWorkspace ? '<span class="material-symbols-outlined text-white text-[12px] font-bold">check</span>' : ''}
-              </div>
-              <div>
-                <p class="text-sm font-medium ${hasWorkspace ? 'text-on-surface-variant line-through' : 'text-on-surface'}">Setup workspace identity</p>
-                <p class="text-xs text-on-surface-variant">${hasWorkspace ? 'Workspace created automatically.' : 'Create your workspace.'}</p>
-              </div>
-            </li>
-            <li class="flex items-start gap-3 group ${hasTasks ? 'cursor-default' : 'cursor-pointer'}" ${!hasTasks ? 'id="checklist-create-task"' : ''}>
-              <div class="w-5 h-5 rounded ${hasTasks ? 'bg-primary' : 'border-2 border-primary/20 group-hover:border-primary'} flex items-center justify-center mt-0.5">
-                ${hasTasks ? '<span class="material-symbols-outlined text-white text-[12px] font-bold">check</span>' : ''}
-              </div>
-              <div>
-                <p class="text-sm font-medium ${hasTasks ? 'text-on-surface-variant line-through' : 'text-on-surface'}">Add your first task</p>
-                <p class="text-xs text-on-surface-variant">${hasTasks ? 'You\'re on track!' : 'Start tracking your workflow.'}</p>
-              </div>
-            </li>
-          </ul>
-          <div class="mt-auto pt-8">
-            <div class="w-full bg-surface-container rounded-full h-1.5 mb-2">
-              <div class="bg-primary h-1.5 rounded-full transition-all duration-500" style="width: ${progressPct}%"></div>
-            </div>
-            <p class="text-[10px] uppercase tracking-widest font-bold text-on-surface-variant">${progressPct}% PROGRESS</p>
-          </div>
-        </div>
+        </section>
 
-        <div class="md:col-span-8">
-          <div class="flex justify-between items-end mb-4">
-            <h3 class="font-bold tracking-tight text-on-surface px-2">Recent Pages</h3>
-            <button class="text-xs font-bold text-primary hover:underline" onclick="window.location.hash='notes'">View all</button>
+        <section class="motion-dashboard-section motion-focus-section" aria-labelledby="motion-focus-title">
+          <div class="motion-section-heading"><div><p class="motion-section-kicker">STAY ON TRACK</p><h2 id="motion-focus-title">Your focus</h2></div><a href="#kanban">Open board <span class="material-symbols-outlined" aria-hidden="true">arrow_forward</span></a></div>
+          <div class="motion-focus-card">
+            <div class="motion-focus-top"><span class="motion-focus-symbol material-symbols-outlined" aria-hidden="true">${pending ? 'bolt' : 'celebration'}</span><span class="motion-focus-label">${pending ? 'IN PROGRESS' : 'ALL CLEAR'}</span></div>
+            <strong>${pending ? `${pending} task${pending === 1 ? '' : 's'} on your list` : 'A fresh start looks good on you.'}</strong>
+            <p>${pending ? 'Small steps become meaningful progress. Keep the momentum going.' : 'Your open tasks are done. Add a new one whenever inspiration strikes.'}</p>
+            <button id="dashboard-add-task" type="button"><span class="material-symbols-outlined" aria-hidden="true">add</span> Add a task</button>
           </div>
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4" id="recent-pages-grid">
-            ${
-              pages.length === 0
-                ? `
-              <div class="col-span-2 empty-state">
-                <span class="material-symbols-outlined">description</span>
-                <h3>No pages yet</h3>
-                <p>Create your first page to get started.</p>
-                <button class="mt-4 px-5 py-2 bg-primary text-on-primary rounded-lg font-semibold text-sm hover:opacity-90 transition-opacity" id="dashboard-create-page-btn">
-                  <span class="material-symbols-outlined text-sm" style="vertical-align: -3px;">add</span>
-                  Create Page
-                </button>
-              </div>
-            `
-                : pages
-                    .map(
-                      (page) => `
-              <div class="group bg-surface-container-lowest rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer" onclick="window.location.hash='editor/${page.id}'">
-                <div class="h-32 bg-surface-container overflow-hidden flex items-center justify-center">
-                  <span class="text-4xl">${escapeHtml(page.icon || '📄')}</span>
-                </div>
-                <div class="p-4">
-                  <div class="flex items-center justify-between mb-2">
-                    <span class="text-[10px] font-bold text-tertiary uppercase tracking-wider">${escapeHtml(page.page_type || 'Note')}</span>
-                    <span class="material-symbols-outlined text-sm text-on-surface-variant opacity-0 group-hover:opacity-100 transition-opacity">more_horiz</span>
-                  </div>
-                  <h4 class="font-semibold text-on-surface mb-1">${escapeHtml(page.title || 'Untitled')}</h4>
-                  <p class="text-xs text-on-surface-variant">${timeAgo(page.updated_at)}</p>
-                </div>
-              </div>
-            `
-                    )
-                    .join('')
-            }
+          <div class="motion-task-list">
+            ${taskRows || `<p class="motion-empty-tasks">No tasks yet. <a href="#kanban">Explore your board</a></p>`}
           </div>
-        </div>
-
-        <div class="md:col-span-12 bg-surface-container-low/50 rounded-xl p-8 border border-outline-variant/10">
-          <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
-            <div>
-              <h3 class="text-xl font-bold tracking-tight text-on-surface mb-1">Active Tasks</h3>
-              <p class="text-sm text-on-surface-variant">
-                ${
-                  pending > 0
-                    ? `You have ${pending} task${pending > 1 ? 's' : ''} requiring attention.`
-                    : 'All caught up! No pending tasks.'
-                }
-              </p>
-            </div>
-            <div class="flex flex-wrap items-center justify-end gap-4">
-              <button id="dashboard-add-task" class="px-4 py-2.5 bg-primary text-on-primary rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-primary-dim transition-colors" type="button">
-                <span class="material-symbols-outlined text-base">add_task</span>
-                Add task
-              </button>
-              <div class="flex flex-col items-center justify-center p-4 bg-surface-container-lowest rounded-lg w-24">
-                <span class="text-2xl font-bold text-on-surface">${String(counts.total).padStart(2, '0')}</span>
-                <span class="text-[10px] font-bold text-on-surface-variant uppercase">Total</span>
-              </div>
-              <div class="flex flex-col items-center justify-center p-4 bg-primary text-on-primary rounded-lg w-24 shadow-lg shadow-primary/20">
-                <span class="text-2xl font-bold">${String(pending).padStart(2, '0')}</span>
-                <span class="text-[10px] font-bold uppercase">Pending</span>
-              </div>
-              <div class="flex flex-col items-center justify-center p-4 bg-surface-container-lowest rounded-lg w-24">
-                <span class="text-2xl font-bold text-tertiary">${String(counts.done).padStart(2, '0')}</span>
-                <span class="text-[10px] font-bold text-on-surface-variant uppercase">Done</span>
-              </div>
-              <div class="flex flex-col items-center justify-center p-4 bg-error-container/40 rounded-lg w-24">
-                <span class="text-2xl font-bold text-error">${String(counts.overdue || 0).padStart(2, '0')}</span>
-                <span class="text-[10px] font-bold text-error uppercase">Overdue</span>
-              </div>
-            </div>
-          </div>
-
-          <div class="mt-8 space-y-3" id="task-list">
-            ${
-              tasks.length === 0
-                ? `
-              <div class="text-center py-6 text-on-surface-variant text-sm">
-                No tasks yet.
-                <button class="text-primary font-semibold hover:underline ml-1" onclick="window.location.hash='kanban'">Head to the Kanban board</button>
-                to create some!
-              </div>
-            `
-                : tasks
-                    .slice(0, 4)
-                    .map(
-                      (task) => `
-              <div class="flex items-center justify-between p-3 bg-white/40 dark:bg-stone-800/40 hover:bg-white dark:hover:bg-stone-800 rounded-lg transition-colors cursor-pointer group" data-task-id="${task.id}" data-dash-task>
-                <div class="flex items-center gap-4">
-                  <button type="button" class="dashboard-task-toggle w-6 h-6 rounded-full flex items-center justify-center border ${task.completed ? 'bg-primary border-primary text-on-primary' : 'border-outline-variant text-transparent hover:text-primary'}" data-task-id="${task.id}" data-completed="${task.completed}" aria-label="${escapeHtml(`${task.completed ? 'Reopen' : 'Complete'} ${task.title || 'task'}`)}">
-                    <span class="material-symbols-outlined text-sm">check</span>
-                  </button>
-                  <button type="button" class="text-left text-sm font-medium text-on-surface hover:underline ${task.completed ? 'line-through opacity-50' : ''}" aria-label="Open task ${escapeHtml(task.title || 'Untitled task')}">${escapeHtml(task.title || 'Untitled task')}</button>
-                </div>
-                <div class="flex items-center gap-4">
-                  <span class="text-xs font-bold text-on-surface-variant">${
-                    task.due_date
-                      ? new Date(task.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-                      : task.status?.toUpperCase().replace('_', ' ')
-                  }</span>
-                  <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors">chevron_right</span>
-                </div>
-              </div>
-            `
-                    )
-                    .join('')
-            }
-          </div>
-        </div>
+        </section>
       </div>
+
+      ${progressPct < 100 ? `<section class="motion-setup-card"><div><p class="motion-section-kicker">GETTING STARTED</p><h2>Make Motion yours</h2><p>${completedItems} of 3 essentials complete</p></div><div class="motion-setup-progress"><span style="width:${progressPct}%"></span></div>${pages.length ? '' : '<button id="checklist-create-page" type="button">Create your first page</button>'}${counts.total ? '' : '<button id="checklist-create-task" type="button">Add your first task</button>'}</section>` : ''}
     </div>
   `;
 
-  // Bind: checklist item → navigate to create page
-  container.querySelector('#checklist-create-page')?.addEventListener('click', async () => {
-    document.getElementById('btn-new-page')?.click();
-  });
-
-  // Bind: checklist item → navigate to kanban
-  container.querySelector('#checklist-create-task')?.addEventListener('click', async () => {
-    window.location.hash = 'kanban';
-  });
-
-  // Bind: empty state create page button
-  container.querySelector('#dashboard-create-page-btn')?.addEventListener('click', async () => {
-    document.getElementById('btn-new-page')?.click();
-  });
-
-  container.querySelector('#dashboard-add-task')?.addEventListener('click', async () => {
+  const openNewPage = () => window.dispatchEvent(new CustomEvent('motion:open-new-page'));
+  const addTask = async () => {
     const title = await requestInput('Task title:');
     if (!title?.trim()) return;
     const priorityInput = await requestInput('Priority: low, medium, high, or urgent', 'medium');
@@ -237,30 +118,27 @@ export async function renderDashboard(container) {
       showToast('Use the date format YYYY-MM-DD', 'error');
       return;
     }
-    const { data: task, error: taskError } = await createTask(title.trim(), { workspaceId: AppState.workspace?.id, priority, dueDate });
-    if (taskError) {
-      showToast(`Could not create task: ${taskError.message}`, 'error');
-      return;
-    }
+    const { data: task, error } = await createTask(title.trim(), { workspaceId: AppState.workspace?.id, priority, dueDate });
+    if (error) return showToast(`Could not create task: ${error.message}`, 'error');
     showToast('Task added', 'success');
     window.location.hash = `kanban?task=${encodeURIComponent(task.id)}`;
-  });
+  };
 
-  // Bind: task click → navigate to kanban
-  container.querySelectorAll('[data-dash-task]').forEach((el) => {
-    el.addEventListener('click', async () => {
-      window.location.hash = `kanban?task=${encodeURIComponent(el.dataset.taskId || '')}`;
-    });
+  ['dashboard-hero-new-page', 'dashboard-create-page-btn', 'checklist-create-page'].forEach((id) => {
+    container.querySelector(`#${id}`)?.addEventListener('click', openNewPage);
   });
-
+  ['dashboard-hero-new-task', 'dashboard-add-task'].forEach((id) => {
+    container.querySelector(`#${id}`)?.addEventListener('click', addTask);
+  });
+  container.querySelector('#checklist-create-task')?.addEventListener('click', () => { window.location.hash = 'kanban'; });
+  container.querySelectorAll('[data-dash-task]').forEach((row) => {
+    row.addEventListener('click', () => { window.location.hash = `kanban?task=${encodeURIComponent(row.dataset.taskId || '')}`; });
+  });
   container.querySelectorAll('.dashboard-task-toggle').forEach((button) => {
     button.addEventListener('click', async (event) => {
       event.stopPropagation();
-      const { error: toggleError } = await toggleTask(button.dataset.taskId, button.dataset.completed !== 'true');
-      if (toggleError) {
-        showToast(`Could not update task: ${toggleError.message}`, 'error');
-        return;
-      }
+      const { error } = await toggleTask(button.dataset.taskId, button.dataset.completed !== 'true');
+      if (error) return showToast(`Could not update task: ${error.message}`, 'error');
       renderDashboard(container);
     });
   });

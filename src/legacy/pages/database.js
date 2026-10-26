@@ -8,7 +8,7 @@ import { getPages, createPage, updatePage, togglePageFavorite, archivePage, dele
 import { escapeHtml } from '../../lib/sanitize.js';
 
 export async function renderDatabase(container) {
-  setBreadcrumb('Database');
+  setBreadcrumb('Library');
 
   const workspaceId = AppState.workspace?.id;
   if (!workspaceId) {
@@ -35,7 +35,7 @@ export async function renderDatabase(container) {
       <div class="mb-8">
         <div class="flex justify-between items-end mb-6">
           <div>
-            <h2 class="text-3xl font-extrabold tracking-tight text-on-surface mb-2">Project Database</h2>
+            <h2 class="text-3xl font-extrabold tracking-tight text-on-surface mb-2">Project Library</h2>
             <p class="text-on-surface-variant">Manage and curate your organizational assets across all active workstreams.</p>
           </div>
           <div class="flex flex-wrap gap-2">
