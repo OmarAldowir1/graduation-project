@@ -26,7 +26,7 @@ import {
 } from '../../lib/queries.js';
 import { escapeHtml } from '../../lib/sanitize.js';
 
-export async function renderSettings(container) {
+export async function renderSettings(container, route) {
   setBreadcrumb('Settings');
 
   const userId = AppState.user?.id;
@@ -64,7 +64,7 @@ export async function renderSettings(container) {
       <div class="max-w-4xl mx-auto">
         <header class="mb-12">
           <h2 class="font-['Inter'] tracking-tight text-on-surface text-3xl font-bold">Settings</h2>
-          <p class="text-on-surface-variant mt-2">Manage your personal preferences and workspace configuration.</p>
+          <p class="text-on-surface-variant mt-2">Manage your preferences, your team and its members.</p>
         </header>
 
         <div class="grid grid-cols-1 md:grid-cols-12 gap-8">
@@ -74,8 +74,8 @@ export async function renderSettings(container) {
               My Account
             </button>
             <button class="w-full text-left px-4 py-2.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low transition-colors text-sm flex items-center gap-3" data-settings-tab="workspace">
-              <span class="material-symbols-outlined text-lg">business</span>
-              Workspace
+              <span class="material-symbols-outlined text-lg">group</span>
+              Team
             </button>
             <button class="w-full text-left px-4 py-2.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low transition-colors text-sm flex items-center gap-3" data-settings-tab="notifications">
               <span class="material-symbols-outlined text-lg">notifications</span>
@@ -187,8 +187,8 @@ export async function renderSettings(container) {
 
             <section class="space-y-6" id="settings-workspace">
               <div>
-                <h3 class="text-lg font-semibold text-on-surface">Workspace</h3>
-                <p class="text-sm text-on-surface-variant">Manage the people who can access ${safeWorkspaceName}.</p>
+                <h3 class="text-lg font-semibold text-on-surface">Team</h3>
+                <p class="text-sm text-on-surface-variant">Invite people to ${safeWorkspaceName}. Everyone on the team can see its projects, pages and tasks.</p>
               </div>
               ${isWorkspaceOwner ? `<form id="workspace-name-form" class="flex flex-col sm:flex-row gap-3">
                 <input id="workspace-name-input" class="flex-1 px-4 py-2.5 bg-surface-container rounded-lg border-0 text-sm" value="${escapeHtml(AppState.workspace?.name || '')}" maxlength="80" required />
@@ -223,7 +223,7 @@ export async function renderSettings(container) {
                 }
                 ${
                   members.length === 0
-                    ? '<div class="p-6 text-sm text-on-surface-variant">No workspace members are available yet. Apply the collaboration schema to enable this list.</div>'
+                    ? '<div class="p-6 text-sm text-on-surface-variant">No team members yet. Invite someone above to start collaborating.</div>'
                     : members
                         .map((member) => {
                           const memberName = member.user?.name || member.user?.email || 'Workspace member';
@@ -363,7 +363,7 @@ export async function renderSettings(container) {
         const { data: importedPage, error: pageError } = await createPage(
           workspaceId,
           String(sourcePage.title || 'Imported page').slice(0, 200),
-          ['note', 'document', 'database', 'kanban'].includes(sourcePage.page_type) ? sourcePage.page_type : 'note',
+          ['note', 'document', 'database', 'kanban', 'project'].includes(sourcePage.page_type) ? sourcePage.page_type : 'note',
           sourcePage.content && typeof sourcePage.content === 'object' ? sourcePage.content : {},
           parentId
         );
@@ -409,6 +409,15 @@ export async function renderSettings(container) {
     });
   });
 
+  if (route?.query?.get('section') === 'team') {
+    // Wait for layout (fonts, images) to settle before scrolling.
+    window.setTimeout(() => {
+      if (!container.isConnected) return;
+      document.getElementById('settings-workspace')?.scrollIntoView({ block: 'start' });
+      document.getElementById('invite-member-email')?.focus({ preventScroll: true });
+    }, 250);
+  }
+
   container.querySelectorAll('.member-role-select').forEach((select) => {
     select.addEventListener('change', async () => {
       const { error } = await updateWorkspaceMember(select.dataset.memberId, { role: select.value });
@@ -419,9 +428,23 @@ export async function renderSettings(container) {
   document.getElementById('invite-member-form')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (!workspaceId) return showToast('No workspace is selected', 'error');
+    if (!isWorkspaceOwner) return showToast('Only the team owner can invite members.', 'error');
     const emailInput = document.getElementById('invite-member-email');
     const roleInput = document.getElementById('invite-member-role');
-    const { data: invitation, error } = await createWorkspaceInvitation(workspaceId, emailInput.value, roleInput.value, userId);
+    const submit = event.currentTarget.querySelector('button[type="submit"]') || event.currentTarget.querySelector('button');
+    if (submit.disabled) return;
+    submit.disabled = true;
+    submit.textContent = 'Creating invitation…';
+    let result;
+    try {
+      result = await createWorkspaceInvitation(workspaceId, emailInput.value, roleInput.value, userId);
+    } catch (error) {
+      return showToast(`Could not invite member: ${error.message}`, 'error');
+    } finally {
+      submit.disabled = false;
+      submit.textContent = 'Invite';
+    }
+    const { data: invitation, error } = result;
     if (error) return showToast(`Could not invite member: ${error.message}`, 'error');
     const inviteUrl = `${window.location.origin}${window.location.pathname}#invite/${invitation.token}`;
     try {
@@ -439,9 +462,9 @@ export async function renderSettings(container) {
     const name = document.getElementById('workspace-name-input')?.value.trim();
     if (!name || !workspaceId) return;
     const { data, error } = await updateWorkspace(workspaceId, { name });
-    if (error) return showToast(`Could not rename workspace: ${error.message}`, 'error');
+    if (error) return showToast(`Could not rename team: ${error.message}`, 'error');
     AppState.workspace = { ...AppState.workspace, ...data, name };
-    showToast('Workspace name updated', 'success');
+    showToast('Team name updated', 'success');
     await renderSettings(container);
   });
 

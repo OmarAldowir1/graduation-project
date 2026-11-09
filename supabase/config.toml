@@ -1,0 +1,7 @@
+# Keep this project's existing gateway JWT verification enabled. The handler
+# additionally validates each bearer token with Supabase Auth and checks RLS.
+[functions.cloudflare-page-ai]
+verify_jwt = true
+
+[functions.text-ai]
+verify_jwt = true

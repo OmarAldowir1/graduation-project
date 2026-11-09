@@ -3,6 +3,7 @@
 // ============================================
 
 import { supabase } from './supabase.js';
+import { saveWorkspaceInvitation } from './workspaceInvitations.js';
 
 // ============================================
 // USER QUERIES
@@ -24,22 +25,7 @@ export async function updateUserProfile(userId, updates) {
 }
 
 export async function createWorkspaceInvitation(workspaceId, email, role = 'editor', invitedBy) {
-  const { data, error } = await supabase
-    .from('workspace_invitations')
-    .upsert(
-      {
-        workspace_id: workspaceId,
-        email: email.trim().toLowerCase(),
-        role,
-        invited_by: invitedBy,
-        token: crypto.randomUUID(),
-        accepted_at: null
-      },
-      { onConflict: 'workspace_id,email' }
-    )
-    .select('id, workspace_id, email, role, token, created_at')
-    .single();
-  return { data, error };
+  return saveWorkspaceInvitation(supabase, workspaceId, email, role, invitedBy);
 }
 
 export async function getWorkspaceInvitations(workspaceId) {
@@ -266,7 +252,7 @@ export async function deleteNote(noteId) {
 export async function getTasks({ workspaceId, pageId, status, limit } = {}) {
   let query = supabase
     .from('tasks')
-    .select('*, assignee:users(id, name, avatar_url)')
+    .select('*, assignee:users!assignee_id(id, name, avatar_url)')
     .order('sort_order', { ascending: true });
 
   if (pageId) query = query.eq('page_id', pageId);
@@ -278,7 +264,7 @@ export async function getTasks({ workspaceId, pageId, status, limit } = {}) {
   if (isMissingColumnError(error, 'tasks', 'workspace_id')) {
     query = supabase
       .from('tasks')
-      .select('*, assignee:users(id, name, avatar_url)')
+      .select('*, assignee:users!assignee_id(id, name, avatar_url)')
       .order('sort_order', { ascending: true });
     if (pageId) query = query.eq('page_id', pageId);
     if (status) query = query.eq('status', status);
@@ -325,7 +311,7 @@ export async function createTask(
       tags: tags || [],
       sort_order: sortOrder
     })
-    .select('*, assignee:users(id, name, avatar_url)')
+    .select('*, assignee:users!assignee_id(id, name, avatar_url)')
     .single();
   return { data, error };
 }
@@ -339,7 +325,7 @@ export async function updateTask(taskId, updates) {
     .from('tasks')
     .update(nextUpdates)
     .eq('id', taskId)
-    .select('*, assignee:users(id, name, avatar_url)')
+    .select('*, assignee:users!assignee_id(id, name, avatar_url)')
     .single();
   return { data, error };
 }
@@ -402,15 +388,31 @@ export async function getComments(pageId) {
   return { data: data || [], error };
 }
 
-export async function createComment(pageId, content, parentId = null) {
+// True when the database has not yet run sql/collaboration.sql.
+export function isMissingMentionsColumn(error) {
+  const message = String(error?.message || '');
+  return error?.code === 'PGRST204' || error?.code === '42703' || (/mentions/i.test(message) && /column/i.test(message));
+}
+
+export async function createComment(pageId, content, parentId = null, mentions = []) {
   const { data: authData, error: authError } = await supabase.auth.getUser();
   if (authError || !authData?.user) return { data: null, error: authError || { message: 'Sign in to post a comment.' } };
-  const { data, error } = await supabase
+  const row = { page_id: pageId, user_id: authData.user.id, content, parent_id: parentId };
+  const insert = (values) => supabase
     .from('comments')
-    .insert({ page_id: pageId, user_id: authData.user.id, content, parent_id: parentId })
+    .insert(values)
     .select('*, author:users(id, name, avatar_url)')
     .single();
+  let { data, error } = await insert(mentions.length ? { ...row, mentions } : row);
+  if (error && mentions.length && isMissingMentionsColumn(error)) ({ data, error } = await insert(row));
   return { data, error };
+}
+
+export async function createTaskComment(taskId, userId, content, mentions = []) {
+  const row = { task_id: taskId, user_id: userId, content };
+  let { error } = await supabase.from('task_comments').insert(mentions.length ? { ...row, mentions } : row);
+  if (error && mentions.length && isMissingMentionsColumn(error)) ({ error } = await supabase.from('task_comments').insert(row));
+  return { error };
 }
 
 export async function updateComment(commentId, content) {
@@ -431,7 +433,7 @@ export async function deleteComment(commentId) {
 export async function getNotifications(limit = 25) {
   const { data, error } = await supabase
     .from('notifications')
-    .select('*, actor:users(id, name, avatar_url)')
+    .select('*, actor:users!actor_id(id, name, avatar_url)')
     .order('created_at', { ascending: false })
     .limit(limit);
   return { data: data || [], error };

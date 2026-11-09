@@ -9,6 +9,10 @@ dist/
 .env
 .env.local
 .env.*.local
+supabase/functions/.env
+supabase/functions/.env.*
+!supabase/functions/.env.example
+supabase/.temp/
 
 # OS generated files
 .DS_Store
@@ -31,3 +35,4 @@ npm-debug.log*
 # Misc
 *.tmp
 *.bak
+.claude/

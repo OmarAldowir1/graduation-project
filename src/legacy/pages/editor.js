@@ -1,4 +1,5 @@
-import { requestInput, requestConfirmation } from "../../lib/dialogs.js";
+import { requestInput, requestConfirmation, requestChoice } from "../../lib/dialogs.js";
+import { requestNewTask } from "../../lib/taskDetails.js";
 // ============================================
 // MOTION — Block Editor Page Module (Legacy)
 // ============================================
@@ -6,7 +7,9 @@ import { requestInput, requestConfirmation } from "../../lib/dialogs.js";
 import { AppState, setBreadcrumb, showToast } from '../app.js';
 import { assistWithText } from '../../lib/ai.js';
 import { sanitizeHtml } from '../../lib/sanitize.js';
-import { composeBlock, getBlockType } from '../../lib/blockComposer.js';
+import { openAIPagePanel } from '../../lib/aiPagePanel.js';
+import { createNotionEditor } from '../../lib/notionEditor.js';
+import { registerActiveEditor, unregisterActiveEditor } from '../../lib/aiEditorBridge.js';
 import {
   getRecentPages,
   getPages,
@@ -23,8 +26,16 @@ import {
   createComment,
   updateComment,
   deleteComment,
+  getWorkspaceMembers,
   timeAgo
 } from '../../lib/queries.js';
+import { buildProjectIndex, tasksForProject } from '../../lib/projects.js';
+import { openShareDialog, openHistory, saveAsTemplate } from '../../lib/pageTools.js';
+import { attachEditorMentions } from '../../lib/editorMentions.js';
+import { startLiveCollaboration } from '../../lib/liveCollab.js';
+import { supabase } from '../../lib/supabase.js';
+import { renderProjectBar } from './project.js';
+import { attachMentionPicker, extractMentionIds, renderMentionsHtml, memberLabel } from '../../lib/mentions.js';
 
 function cleanBlockContent(html) {
   const template = document.createElement('template');
@@ -33,14 +44,41 @@ function cleanBlockContent(html) {
     if (button.parentElement?.classList.contains('absolute')) button.parentElement.remove();
     else button.remove();
   });
+  template.content.querySelectorAll('.notion-table-toolbar').forEach(el => el.remove());
+  template.content.querySelectorAll('.notion-table-block').forEach(block => {
+    const table = block.querySelector('table');
+    if (table) block.replaceWith(table);
+  });
+  template.content.querySelectorAll('.editor-callout-wrapper').forEach(wrapper => {
+    const callout = wrapper.querySelector('aside');
+    if (callout) wrapper.replaceWith(callout);
+  });
+  template.content.querySelectorAll('.editor-toggle-wrapper').forEach(wrapper => {
+    const toggle = wrapper.querySelector('details');
+    if (toggle) wrapper.replaceWith(toggle);
+  });
   template.content.querySelectorAll('[contenteditable]').forEach(element => element.removeAttribute('contenteditable'));
-  template.content.querySelectorAll('.block-context-selected').forEach(element => element.classList.remove('block-context-selected'));
-  template.content.querySelectorAll('[data-block-handle]').forEach(element => element.remove());
+  template.content.querySelectorAll('.block-context-selected, .notion-block-selected, .notion-block-is-dragging').forEach(element => {
+    element.classList.remove('block-context-selected', 'notion-block-selected', 'notion-block-is-dragging');
+  });
+  template.content.querySelectorAll('[data-block-handle], .notion-block-gutter-handle, .notion-block-drop-line').forEach(element => element.remove());
   template.content.querySelectorAll('[data-block-row], div.flex.items-start.group.relative').forEach(element => element.replaceWith(...element.childNodes));
   return template.innerHTML;
 }
 
 export async function renderEditor(container, route) {
+  // Overlapping renders (fast navigation, React StrictMode) must not each create an editor.
+  const renderToken = Symbol('editor-render');
+  container.__renderToken = renderToken;
+  if (container.__editorBridgeInstance) {
+    unregisterActiveEditor(container.__editorBridgeInstance);
+    container.__editorBridgeInstance = null;
+  }
+  if (container.__notionEditor) {
+    container.__notionEditor.destroy();
+    container.__notionEditor = null;
+  }
+  document.querySelector('.ai-page-backdrop')?.dispatchEvent(new Event('motion:close'));
   setBreadcrumb('Editor');
 
   const pageIdFromRoute = route?.segments?.[0] || null;
@@ -73,96 +111,33 @@ export async function renderEditor(container, route) {
     const html = String(candidate.content?.html || '');
     return html.includes(`#editor/${page.id}`) || html.includes(`data-page-link="${page.id}"`);
   });
-  const userName = AppState.profile?.name || 'You';
+
+  const owningProjectId = buildProjectIndex(workspacePages || []).get(page.id) || null;
+  const owningProject = owningProjectId ? (workspacePages || []).find((candidate) => candidate.id === owningProjectId) : null;
+  setBreadcrumb(owningProject && owningProject.id !== page.id ? `${owningProject.title || 'Project'} / ${page.title || 'Untitled'}` : (page.title || 'Untitled'));
 
   const draft = readLocalDraft(page.id);
   const contentHtml = cleanBlockContent(draft ? draft.html : page.content?.html || '');
   const safeTitle = escapeComment((draft ? draft.title : page.title) || 'Untitled');
-  const safeUserName = escapeComment(userName);
-  const safeIcon = escapeComment(page.icon || '📄');
   const safeCoverUrl = /^https?:\/\//i.test(page.cover_url || '') ? escapeComment(page.cover_url) : '';
+
+  if (container.__renderToken !== renderToken) return;
+  container.__notionEditor?.destroy();
+  container.__notionEditor = null;
 
   container.innerHTML = `
     <div class="editor-layout flex-1 bg-surface overflow-y-auto relative">
-      <div class="max-w-3xl mx-auto pt-12 pb-48 px-12">
-        <div class="flex items-center justify-end gap-2 mb-6 editor-actions">
-          <button id="editor-copy-link" class="editor-action-button" type="button" title="Copy page link">
-            <span class="material-symbols-outlined text-sm">link</span>
-            Copy link
-          </button>
-          <button id="editor-share-page" class="editor-action-button" type="button" title="Share page">
-            <span class="material-symbols-outlined text-sm">share</span>
-            Share
-          </button>
-          <button id="editor-favorite-page" class="editor-action-button" type="button" title="Favorite page">
-            <span class="material-symbols-outlined text-sm">${page.is_favorite ? 'star' : 'star_outline'}</span>
-            ${page.is_favorite ? 'Favorited' : 'Favorite'}
-          </button>
-          <button id="editor-export-markdown" class="editor-action-button" type="button" title="Export as Markdown">
-            <span class="material-symbols-outlined text-sm">download</span>
-            Export
-          </button>
-          <button id="editor-import-markdown" class="editor-action-button" type="button" title="Import Markdown">
-            <span class="material-symbols-outlined text-sm">upload_file</span>
-            Import
-          </button>
-          <input id="editor-import-input" type="file" accept=".md,.markdown,text/markdown,text/plain" hidden />
-          <button id="editor-ai-toggle" class="editor-action-button" type="button" title="Smart assist">
-            <span class="material-symbols-outlined text-sm">auto_awesome</span>
-            Smart assist
-          </button>
-          <button id="editor-add-task" class="editor-action-button" type="button" title="Create a task linked to this page">
-            <span class="material-symbols-outlined text-sm">add_task</span>
-            Add task
-          </button>
-          <button id="editor-link-page" class="editor-action-button" type="button" title="Link another page here">
-            <span class="material-symbols-outlined text-sm">link</span>
-            Link page
-          </button>
-          ${page.page_type === 'database' ? '<button id="editor-open-view" class="editor-action-button" type="button" title="Open database view"><span class="material-symbols-outlined text-sm">database</span> Open database</button>' : ''}
-          ${page.page_type === 'kanban' ? '<button id="editor-open-view" class="editor-action-button" type="button" title="Open Kanban view"><span class="material-symbols-outlined text-sm">view_kanban</span> Open board</button>' : ''}
-          <button id="editor-delete-page" class="editor-action-button editor-action-danger" type="button" title="Delete page">
-            <span class="material-symbols-outlined text-sm">delete</span>
-            Delete
-          </button>
-          <button id="editor-archive-page" class="editor-action-button" type="button" title="Move page to archive">
-            <span class="material-symbols-outlined text-sm">archive</span>
-            Archive
-          </button>
-          <button id="editor-duplicate-page" class="editor-action-button" type="button" title="Duplicate page">
-            <span class="material-symbols-outlined text-sm">content_copy</span>
-            Duplicate
-          </button>
-          <button id="editor-move-page" class="editor-action-button" type="button" title="Move page into another page">
-            <span class="material-symbols-outlined text-sm">drive_file_move</span>
-            Move
-          </button>
-        </div>
-        <div id="editor-ai-panel" class="editor-ai-panel" hidden>
-          <div class="editor-ai-heading">
-            <div>
-              <strong>Smart assist</strong>
-              <p>Summarize, improve, or extract action items from this page.</p>
-            </div>
-            <button id="editor-ai-close" type="button" aria-label="Close smart assist">×</button>
-          </div>
-          <div class="editor-ai-actions">
-            <button type="button" data-ai-action="summarize">Summarize</button>
-            <button type="button" data-ai-action="tasks">Extract tasks</button>
-            <button type="button" data-ai-action="improve">Improve writing</button>
-          </div>
-          <div id="editor-ai-output" class="editor-ai-output">Choose an action to analyze this page.</div>
-        </div>
-        ${
-          safeCoverUrl
-            ? `
+      <div class="max-w-3xl mx-auto pt-12 pb-16 px-12">
+        ${owningProject ? renderProjectBar({ project: owningProject, activeTab: owningProject.id === page.id ? 'plan' : 'pages' }) : ''}
+        ${safeCoverUrl
+      ? `
           <div class="w-full h-48 mb-12 rounded-xl overflow-hidden group relative">
             <img class="w-full h-full object-cover" src="${safeCoverUrl}" alt="Cover" />
             <div class="absolute inset-0 bg-black/5 group-hover:bg-black/0 transition-all"></div>
             <button id="editor-change-cover" class="absolute bottom-4 right-4 bg-surface-container-lowest/90 backdrop-blur px-3 py-1 rounded-md text-[11px] font-medium text-on-surface-variant opacity-0 group-hover:opacity-100 transition-opacity" type="button">Change cover</button>
           </div>
         `
-            : `
+      : `
           <div class="mb-4 opacity-0 hover:opacity-60 transition-opacity">
             <button id="editor-add-cover" class="text-xs text-on-surface-variant flex items-center gap-1" type="button">
               <span class="material-symbols-outlined text-sm">add_photo_alternate</span>
@@ -170,152 +145,186 @@ export async function renderEditor(container, route) {
             </button>
           </div>
         `
-        }
-
-        <button id="editor-change-icon" class="block text-5xl leading-none mb-5" type="button" title="Change page icon">${safeIcon}</button>
+    }
 
         <div class="mb-10 group relative">
-          <h1 id="editor-title" class="text-4xl font-extrabold tracking-tight text-on-surface mb-2 outline-none focus:ring-0" contenteditable="true">${
-            safeTitle
-          }</h1>
+          <button id="editor-change-icon" type="button" class="page-icon-btn" title="Change icon" aria-label="Change page icon">${escapeComment(page.icon || '📄')}</button>
+          <h1 id="editor-title" class="text-4xl font-extrabold tracking-tight text-on-surface mb-2 outline-none focus:ring-0" contenteditable="true">${safeTitle
+    }</h1>
           <div class="flex gap-4 text-sm text-on-surface-variant/60">
             <span class="flex items-center gap-1">
-              <span class="material-symbols-outlined text-[14px]">face</span>
-              Created by ${safeUserName}
-            </span>
-            <span class="flex items-center gap-1">
               <span class="material-symbols-outlined text-[14px]">history</span>
-              ${timeAgo(page.updated_at)}
+              Edited ${timeAgo(page.updated_at)}
             </span>
+            <span id="editor-live-badge" class="editor-live-badge" hidden aria-live="polite"></span>
             <span id="editor-save-status" class="flex items-center gap-1 text-primary" aria-live="polite">
               <span class="material-symbols-outlined text-[14px]">${draft ? 'cloud_off' : 'cloud_done'}</span>
               ${draft ? 'Local draft recovered' : 'Saved'}
             </span>
           </div>
-        </div>
-
-        <section class="editor-linked-tasks mb-8" aria-label="Tasks linked to this page">
-          <div class="flex items-center justify-between mb-3">
-            <h2 class="text-xs font-bold uppercase tracking-widest text-on-surface-variant">Linked tasks</h2>
-            <span class="text-xs text-on-surface-variant">${linkedTasks?.length || 0}</span>
-          </div>
-          ${linkedTasks?.length
-            ? linkedTasks.map((task) => `
-              <div class="w-full flex items-center gap-3 text-left px-3 py-2 rounded-lg hover:bg-surface-container-low transition-colors">
-                <button type="button" class="editor-linked-task-toggle" data-task-id="${task.id}" data-completed="${task.completed ? 'true' : 'false'}" aria-label="${task.completed ? 'Reopen' : 'Complete'} ${escapeComment(task.title || 'Untitled task')}">
-                <span class="material-symbols-outlined text-base ${task.completed ? 'text-primary' : 'text-on-surface-variant'}">${task.completed ? 'check_circle' : 'radio_button_unchecked'}</span>
-                </button>
-                <a href="#kanban?task=${task.id}" class="text-sm text-on-surface hover:underline ${task.completed ? 'line-through opacity-60' : ''}">${escapeComment(task.title || 'Untitled task')}</a>
-                <span class="ml-auto text-[10px] uppercase tracking-wider text-on-surface-variant">${escapeComment(task.status || 'todo')}</span>
+          <div class="page-actions" role="toolbar" aria-label="Page actions">
+            <button type="button" id="page-share-btn"><span class="material-symbols-outlined">ios_share</span>Share</button>
+            <button type="button" id="page-history-btn"><span class="material-symbols-outlined">history</span>History</button>
+            <div class="page-menu-wrap">
+              <button type="button" id="page-ai-btn" aria-haspopup="menu" aria-expanded="false"><span class="material-symbols-outlined">auto_awesome</span>Ask AI</button>
+              <div class="page-menu" role="menu" hidden data-menu="ai">
+                <button type="button" role="menuitem" data-page-ai="summarize"><span class="material-symbols-outlined">summarize</span>Summarize this page</button>
+                <button type="button" role="menuitem" data-page-ai="tasks"><span class="material-symbols-outlined">add_task</span>Turn this page into tasks</button>
+                <button type="button" role="menuitem" data-page-ai="status"><span class="material-symbols-outlined">campaign</span>Write a status update</button>
+                <button type="button" role="menuitem" data-page-ai="improve"><span class="material-symbols-outlined">edit_note</span>Suggest improvements</button>
+                <button type="button" role="menuitem" data-page-ai="ask"><span class="material-symbols-outlined">chat</span>Ask a question about it…</button>
               </div>
-            `).join('')
-            : '<p class="text-sm text-on-surface-variant">No tasks linked yet. Use Add task to connect work to this page.</p>'}
-        </section>
-
-        <section class="editor-backlinks mb-8" aria-label="Backlinks to this page">
-          <div class="flex items-center justify-between mb-3">
-            <h2 class="text-xs font-bold uppercase tracking-widest text-on-surface-variant">Backlinks</h2>
-            <span class="text-xs text-on-surface-variant">${backlinks.length}</span>
-          </div>
-          ${backlinks.length
-            ? backlinks.map((backlink) => `<a class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-surface-container-low text-sm text-on-surface" href="#editor/${backlink.id}"><span class="text-base">${escapeComment(backlink.icon || '📄')}</span><span>${escapeComment(backlink.title || 'Untitled')}</span></a>`).join('')
-            : '<p class="text-sm text-on-surface-variant">No pages link here yet. Use Link page to create a connection.</p>'}
-        </section>
-
-        <div id="editor-blocks" class="space-y-4">
-          ${
-            contentHtml
-              ? `
-            <div class="flex items-start group relative">
-              <div class="absolute -left-12 top-1 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                <button data-editor-add-block class="w-6 h-6 flex items-center justify-center hover:bg-surface-container rounded text-on-surface-variant" type="button" title="Add block">
-                  <span class="material-symbols-outlined text-[18px]">add</span>
-                </button>
-              </div>
-              <div class="motion-block-content w-full outline-none text-[16px] leading-relaxed text-on-surface" contenteditable="true">${contentHtml}</div>
             </div>
-          `
-              : ''
-          }
+            <div class="page-menu-wrap">
+              <button type="button" id="page-more-btn" aria-haspopup="menu" aria-expanded="false" aria-label="More page actions"><span class="material-symbols-outlined">more_horiz</span></button>
+              <div class="page-menu" role="menu" hidden data-menu="more">
+                <button type="button" role="menuitem" id="editor-favorite-page"><span class="material-symbols-outlined">${page.is_favorite ? 'star' : 'star_outline'}</span>${page.is_favorite ? 'Favorited' : 'Favorite'}</button>
+                <button type="button" role="menuitem" id="editor-copy-link"><span class="material-symbols-outlined">link</span>Copy link</button>
+                <button type="button" role="menuitem" id="editor-duplicate-page"><span class="material-symbols-outlined">content_copy</span>Duplicate</button>
+                <button type="button" role="menuitem" id="editor-move-page"><span class="material-symbols-outlined">drive_file_move</span>Move to…</button>
+                <button type="button" role="menuitem" id="page-save-template"><span class="material-symbols-outlined">bookmark_add</span>Save as team template</button>
+                <hr />
+                <button type="button" role="menuitem" id="editor-export-markdown"><span class="material-symbols-outlined">download</span>Export as Markdown</button>
+                <button type="button" role="menuitem" id="editor-import-markdown"><span class="material-symbols-outlined">upload</span>Import Markdown</button>
+                <hr />
+                <button type="button" role="menuitem" id="editor-archive-page"><span class="material-symbols-outlined">archive</span>Archive</button>
+                <button type="button" role="menuitem" id="editor-delete-page" class="is-danger"><span class="material-symbols-outlined">delete</span>Delete</button>
+              </div>
+            </div>
+            <input type="file" id="editor-import-input" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden />
+          </div>
         </div>
 
-        <div class="editor-writing-tools">
-          <button id="editor-add-block" class="editor-add-block-button" type="button">
-            <span class="material-symbols-outlined">add</span>
-            <span>Add a block</span>
-            <kbd>/</kbd>
+        <div id="editor-rich-content" class="editor-rich-content mb-8">
+          <div id="editor-canvas" class="editor-canvas"></div>
+        </div>
+
+        <div class="editor-writing-tools flex items-center justify-between py-2 border-t border-outline-variant/30 mt-8">
+          <button id="editor-add-block" class="editor-add-block-button text-xs text-on-surface-variant hover:text-primary flex items-center gap-1.5" type="button">
+            <span class="material-symbols-outlined text-sm">add</span>
+            <span>Add block</span>
+            <kbd class="px-1.5 py-0.5 text-[10px] bg-surface-container-high rounded border border-outline-variant">/</kbd>
           </button>
-          <span class="editor-block-hint">Right-click a block to edit or delete it.</span>
-          <div id="editor-block-menu" class="editor-block-menu" hidden>
-            <div class="editor-block-menu-search">
-              <span class="material-symbols-outlined">search</span>
-              <input id="editor-block-search" type="search" placeholder="Filter blocks..." autocomplete="off" />
-            </div>
-            <div class="editor-block-menu-scroll">
-              <div class="editor-block-menu-group">
-                <p>Basic blocks</p>
-                <button type="button" data-block-type="text"><span class="material-symbols-outlined">text_fields</span><span><strong>Text</strong><small>Start writing with plain text</small></span></button>
-                <button type="button" data-block-type="heading1"><span class="editor-block-icon">H1</span><span><strong>Heading 1</strong><small>Large section heading</small></span></button>
-                <button type="button" data-block-type="heading2"><span class="editor-block-icon">H2</span><span><strong>Heading 2</strong><small>Medium section heading</small></span></button>
-                <button type="button" data-block-type="heading3"><span class="editor-block-icon">H3</span><span><strong>Heading 3</strong><small>Small section heading</small></span></button>
-                <button type="button" data-block-type="page"><span class="material-symbols-outlined">description</span><span><strong>Page</strong><small>Create a linked sub-page</small></span></button>
-                <button type="button" data-block-type="page-link"><span class="material-symbols-outlined">subdirectory_arrow_right</span><span><strong>Page link</strong><small>Link to another page</small></span></button>
-              </div>
-              <div class="editor-block-menu-group">
-                <p>Lists</p>
-                <button type="button" data-block-type="bulleted"><span class="material-symbols-outlined">format_list_bulleted</span><span><strong>Bulleted list</strong><small>Simple list of items</small></span></button>
-                <button type="button" data-block-type="numbered"><span class="material-symbols-outlined">format_list_numbered</span><span><strong>Numbered list</strong><small>List items in order</small></span></button>
-                <button type="button" data-block-type="todo"><span class="material-symbols-outlined">check_box</span><span><strong>To-do list</strong><small>Track tasks and action items</small></span></button>
-                <button type="button" data-block-type="toggle"><span class="material-symbols-outlined">arrow_right</span><span><strong>Toggle list</strong><small>Hide content inside a disclosure</small></span></button>
-              </div>
-              <div class="editor-block-menu-group">
-                <p>Media &amp; advanced</p>
-                <button type="button" data-block-type="quote"><span class="material-symbols-outlined">format_quote</span><span><strong>Quote</strong><small>Capture a memorable quote</small></span></button>
-                <button type="button" data-block-type="callout"><span class="material-symbols-outlined">lightbulb</span><span><strong>Callout</strong><small>Highlight important information</small></span></button>
-                <button type="button" data-block-type="code"><span class="material-symbols-outlined">code</span><span><strong>Code</strong><small>Display a code snippet</small></span></button>
-                <button type="button" data-block-type="divider"><span class="material-symbols-outlined">horizontal_rule</span><span><strong>Divider</strong><small>Separate sections visually</small></span></button>
-                <button type="button" data-block-type="table"><span class="material-symbols-outlined">table</span><span><strong>Simple table</strong><small>Start with a 3 × 3 table</small></span></button>
-                <button type="button" data-block-type="link"><span class="material-symbols-outlined">link</span><span><strong>Link</strong><small>Add a web link</small></span></button>
-                <button type="button" data-block-type="equation"><span class="material-symbols-outlined">functions</span><span><strong>Equation</strong><small>Write a mathematical expression</small></span></button>
-                <button type="button" data-block-type="comment"><span class="material-symbols-outlined">comment</span><span><strong>Comment</strong><small>Discuss this page with your team</small></span></button>
-                <button type="button" data-block-type="ai"><span class="material-symbols-outlined">auto_awesome</span><span><strong>AI assistant</strong><small>Summarize or improve your page</small></span></button>
-              </div>
+          <span class="editor-block-hint text-xs text-on-surface-variant opacity-70">Select text to format or ask AI · Type / to add a block</span>
+        </div>
+
+        <section class="editor-related" aria-label="Tasks and links">
+          <div class="editor-related-head">
+            <h2><span class="material-symbols-outlined">task_alt</span> Tasks on this page <small>${(linkedTasks || []).length}</small></h2>
+            <div class="editor-related-actions">
+              <button id="editor-add-task" type="button"><span class="material-symbols-outlined">add_task</span> Add task</button>
+              <button id="editor-link-page" type="button"><span class="material-symbols-outlined">link</span> Link a page</button>
             </div>
           </div>
-        </div>
-        <div id="editor-empty-area" class="motion-block-content editor-empty-area mt-3 text-on-surface transition-colors cursor-text text-sm min-h-[200px]" contenteditable="true" data-placeholder="Add a block, or type / to choose a block type..."></div>
+          ${(linkedTasks || []).length ? `<ul class="editor-related-list">${linkedTasks.map((task) => `
+            <li>
+              <button type="button" class="editor-linked-task-toggle" data-task-id="${escapeComment(task.id)}" data-completed="${task.status === 'done' || task.completed ? 'true' : 'false'}" aria-label="${task.status === 'done' || task.completed ? 'Mark as not done' : 'Mark as done'}: ${escapeComment(task.title)}">
+                <span class="material-symbols-outlined">${task.status === 'done' || task.completed ? 'check_circle' : 'radio_button_unchecked'}</span>
+              </button>
+              <a href="#kanban?task=${encodeURIComponent(task.id)}" class="${task.status === 'done' || task.completed ? 'is-done' : ''}">${escapeComment(task.title)}</a>
+              ${task.assignee?.name ? `<span class="editor-related-meta">${escapeComment(task.assignee.name)}</span>` : ''}
+              ${task.due_date ? `<span class="editor-related-meta">Due ${escapeComment(task.due_date)}</span>` : ''}
+            </li>`).join('')}</ul>` : '<p class="editor-related-empty">No tasks yet. Add one to assign work to a teammate from this page.</p>'}
+          ${backlinks.length ? `
+            <h3 class="editor-related-subhead">Linked from</h3>
+            <ul class="editor-related-list">${backlinks.map((candidate) => `<li><span>${escapeComment(candidate.icon || '📄')}</span><a href="#editor/${escapeComment(candidate.id)}">${escapeComment(candidate.title || 'Untitled')}</a></li>`).join('')}</ul>` : ''}
+        </section>
       </div>
-
-      <aside id="editor-comments" class="editor-comments-panel" aria-label="Page comments">
+      <aside id="editor-comments" class="editor-comments-panel" aria-label="Page discussion">
         <div class="editor-comments-heading">
           <div>
-            <h2>Comments</h2>
-            <p>Discuss this page with your workspace.</p>
+            <h2>Discussion</h2>
+            <p>Ask questions, give feedback, and @mention teammates.</p>
           </div>
-          <span class="material-symbols-outlined">forum</span>
+          <span class="material-symbols-outlined" aria-hidden="true">forum</span>
         </div>
-        <div class="editor-comments-list">
-          <p class="editor-comments-empty">Loading comments...</p>
-        </div>
+        <div class="editor-comments-list"><p class="editor-comments-empty">Loading comments…</p></div>
       </aside>
     </div>
   `;
 
   const titleEl = container.querySelector('#editor-title');
   let saveTimeout;
+  let notionEditor = null;
+
+  const canvasEl = container.querySelector('#editor-canvas');
+  if (canvasEl) {
+    notionEditor = createNotionEditor({
+      container: canvasEl,
+      initialHtml: contentHtml,
+      onChange: () => debouncedSave(),
+      onAddComment: async ({ selectedText, content }) => {
+        const { data: newComment, error } = await postComment(content);
+        if (error) {
+          showToast(`Could not post comment: ${error.message}`, 'error');
+          return null;
+        }
+        showToast('Comment attached to selection', 'success');
+        await loadComments();
+        return newComment?.id || null;
+      },
+      onCommentClick: (commentId) => {
+        const commentEl = container.querySelector(`[data-comment-id="${commentId}"]`);
+        if (commentEl) {
+          commentEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          commentEl.classList.add('comment-highlight-pulse');
+          setTimeout(() => commentEl.classList.remove('comment-highlight-pulse'), 2000);
+        } else {
+          container.querySelector('#editor-comments')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      },
+      onAskAI: (text) => triggerAIPanel(`Improve or rewrite this block, or turn it into a better structure:\n"${text}"`),
+      extraCommands: [
+        { id: 'mention', label: 'Mention a person', icon: 'alternate_email', desc: 'Notify a teammate', keywords: 'at person user notify', run: ({ quill, index }) => { mentions.showOnly('person'); quill.insertText(index, '@', 'user'); quill.setSelection(index + 1, 0, 'silent'); } },
+        { id: 'date', label: 'Date', icon: 'event', desc: 'Insert a date like Tomorrow', keywords: 'today tomorrow day when reminder', run: ({ quill, index }) => { mentions.showOnly('date'); quill.insertText(index, '@', 'user'); quill.setSelection(index + 1, 0, 'silent'); } },
+        { id: 'page-link', label: 'Link to page', icon: 'link', desc: 'Link another page or project', keywords: 'page reference', run: () => insertBlock('page-link') },
+        { id: 'subpage', label: 'Sub-page', icon: 'note_add', desc: 'Create a page inside this one', keywords: 'page child nested new', run: () => insertBlock('page') },
+        { id: 'web-link', label: 'Web link', icon: 'public', desc: 'Paste a URL', keywords: 'url website http', run: () => insertBlock('link') },
+        { id: 'task', label: 'Task', icon: 'add_task', desc: 'Create a task linked to this page', keywords: 'todo assign kanban', run: () => container.querySelector('#editor-add-task')?.click() },
+        { id: 'ai', label: 'Ask AI to write', icon: 'auto_awesome', desc: 'Draft content with AI', keywords: 'ai generate write draft', run: () => triggerAIPanel() }
+      ]
+    });
+    container.__notionEditor = notionEditor;
+    // "@" in the page text: mention people (notifies them), link pages, insert dates.
+    const mentions = attachEditorMentions(notionEditor.quill, canvasEl, {
+      getPeople: () => commentMembers
+        .filter((member) => member.user_id !== AppState.user?.id)
+        .map((member) => ({ id: member.user_id, label: memberLabel(member), hint: member.user?.email || '' })),
+      getPages: () => (workspacePages || []).filter((candidate) => candidate.id !== page.id && !candidate.archived_at)
+        .map((candidate) => ({ id: candidate.id, label: candidate.title || 'Untitled', icon: candidate.page_type === 'project' ? '📁' : candidate.icon || '📄' })),
+      onPeopleMentioned: async (userIds) => {
+        const { error: mentionError } = await supabase.rpc('notify_page_mentions', { target_page: page.id, user_ids: userIds });
+        if (!mentionError) showToast('They’ll get a notification', 'success');
+      }
+    });
+    // Live co-editing: everyone with this page open edits the same document.
+    const liveBadge = container.querySelector('#editor-live-badge');
+    const live = startLiveCollaboration({
+      quill: notionEditor.quill,
+      pageId: page.id,
+      user: { id: AppState.user?.id, name: AppState.profile?.name || AppState.user?.email?.split('@')[0] || 'Teammate' },
+      onPeersChange: (peers) => {
+        if (!liveBadge) return;
+        liveBadge.hidden = peers.length === 0;
+        liveBadge.innerHTML = peers.length
+          ? `<span class="live-dot"></span>Live · ${peers.slice(0, 3).map((peer) => `<b style="color:${escapeComment(peer.color)}">${escapeComment(peer.name)}</b>`).join(', ')}${peers.length > 3 ? ` +${peers.length - 3}` : ''} ${peers.length === 1 ? 'is' : 'are'} editing`
+          : '';
+      }
+    });
+    container.__liveCollab = live;
+    const originalDestroy = notionEditor.destroy;
+    notionEditor.destroy = () => { live.stop(); container.__liveCollab = null; mentions.destroy(); originalDestroy(); };
+  }
 
   function editorHtml() {
-    const blocks = container.querySelector('#editor-blocks [contenteditable="true"]');
-    const empty = container.querySelector('#editor-empty-area');
-    const template = document.createElement('template');
-    template.innerHTML = (blocks?.innerHTML || '') + (empty?.innerHTML || '');
-    template.content.querySelectorAll('[data-editor-add-block]').forEach(button => button.parentElement.remove());
-    return cleanBlockContent(template.innerHTML);
+    if (notionEditor) {
+      return cleanBlockContent(notionEditor.getHtml());
+    }
+    return '';
   }
 
   async function saveNow() {
     clearTimeout(saveTimeout);
-    decorateBlocks();
     const title = titleEl?.textContent || 'Untitled';
     const html = editorHtml();
     writeLocalDraft(page.id, { title, html });
@@ -324,7 +333,7 @@ export async function renderEditor(container, route) {
     const { error } = await updatePage(page.id, { title, content: { ...(page.content || {}), html } });
     if (status) status.textContent = error ? 'Save failed — local draft kept' : 'Saved';
     if (!error) clearLocalDraft(page.id);
-    else showToast(`Could not save block: ${error.message}`, 'error');
+    else showToast(`Could not save page: ${error.message}`, 'error');
     return !error;
   }
 
@@ -337,86 +346,89 @@ export async function renderEditor(container, route) {
   }
 
   if (titleEl) titleEl.addEventListener('input', debouncedSave);
-  container.querySelector('#editor-blocks')?.addEventListener('input', debouncedSave);
-  container.querySelector('#editor-empty-area')?.addEventListener('input', debouncedSave);
 
-  let dragState = null;
-  const blockRoots = [...container.querySelectorAll('#editor-blocks [contenteditable="true"], #editor-empty-area')];
-  function decorateBlocks() {
-    blockRoots.forEach(root => {
-      root.querySelectorAll(':scope > [data-block-row]').forEach(row => {
-        if (row.children.length <= 1) row.remove();
-      });
-      [...root.children].filter(block => !block.hasAttribute('data-block-row')).forEach(block => {
-        const row = document.createElement('div');
-        row.className = 'editor-draggable-block';
-        row.dataset.blockRow = '';
-        const handle = document.createElement('button');
-        handle.type = 'button'; handle.contentEditable = 'false';
-        handle.dataset.blockHandle = '';
-        handle.className = 'editor-block-drag-handle';
-        handle.setAttribute('aria-label', `Move block: ${(block.textContent || 'Divider').trim().slice(0,60)}`);
-        handle.title = 'Drag to move · Alt + ↑/↓ to reorder';
-        handle.innerHTML = '<span class="material-symbols-outlined" aria-hidden="true">drag_indicator</span>';
-        block.before(row); row.append(handle,block);
-      });
+  const editorBridgeInstance = {
+    pageId: page.id,
+    page,
+    getTitle: () => titleEl?.textContent || page.title || 'Untitled',
+    setTitle: (newTitle) => {
+      if (titleEl) {
+        titleEl.textContent = newTitle;
+        debouncedSave();
+      }
+    },
+    getHtml: () => editorHtml(),
+    getText: () => notionEditor ? notionEditor.quill.getText() : (titleEl?.textContent || ''),
+    replaceContent: async ({ html, title }) => {
+      if (title && titleEl) {
+        titleEl.textContent = title;
+      }
+      if (html !== undefined && notionEditor) {
+        notionEditor.setHtml(html);
+      }
+      await saveNow();
+    },
+    insertContent: async (html, position = 'end') => {
+      if (!notionEditor) return;
+      if (position === 'start') {
+        const current = notionEditor.getHtml();
+        notionEditor.setHtml(html + current);
+      } else {
+        const len = notionEditor.quill.getLength();
+        const separator = len > 1 ? '<p><br></p>' : '';
+        notionEditor.quill.clipboard.dangerouslyPasteHTML(len - 1, separator + html);
+      }
+      await saveNow();
+    },
+    saveNow
+  };
+  container.__editorBridgeInstance = editorBridgeInstance;
+  registerActiveEditor(editorBridgeInstance);
+
+  container.querySelector('#editor-add-block')?.addEventListener('click', () => {
+    notionEditor?.openBlockMenuAtEnd();
+  });
+
+  function decorateBlocks() { }
+
+  const aiUndoKey = `motion-ai-undo:${page.id}`;
+  const triggerAIPanel = (customPrompt = '') => {
+    const plain = notionEditor ? notionEditor.quill.getText() : (titleEl?.textContent || '');
+    openAIPagePanel({
+      pageId: page.id,
+      pageTitle: titleEl?.textContent || 'Untitled',
+      pageText: plain,
+      initialPrompt: customPrompt,
+      applyBlocks: async html => {
+        if (!titleEl.isConnected) throw new Error('The editor changed. Reopen the AI assistant on the current page.');
+        clearTimeout(saveTimeout);
+        if (notionEditor) {
+          const before = notionEditor.getHtml();
+          const cleanHtml = sanitizeHtml(html);
+          notionEditor.setHtml(before + cleanHtml);
+          if (!await saveNow()) {
+            notionEditor.setHtml(before);
+            throw new Error('Apply failed. The proposal was not kept on the page.');
+          }
+          try { localStorage.setItem(aiUndoKey, JSON.stringify({ before })); } catch { /* ignore */ }
+        }
+      },
+      undoApply: async () => {
+        if (!titleEl.isConnected) throw new Error('The editor changed. Reopen the AI assistant on the current page.');
+        let undo; try { undo = JSON.parse(localStorage.getItem(aiUndoKey)); } catch { undo = null; }
+        if (!undo?.before) throw new Error('There is no saved AI addition to undo on this browser.');
+        clearTimeout(saveTimeout);
+        if (notionEditor) {
+          notionEditor.setHtml(undo.before);
+          if (!await saveNow()) {
+            throw new Error('Undo could not save.');
+          }
+          localStorage.removeItem(aiUndoKey);
+        }
+      }
     });
-  }
-  function clearBlockDrag() {
-    container.querySelectorAll('.block-drop-before,.block-drop-after,.block-is-dragging').forEach(row => row.classList.remove('block-drop-before','block-drop-after','block-is-dragging'));
-    dragState = null;
-  }
-  container.addEventListener('pointerdown', event => {
-    const handle = event.target.closest('[data-block-handle]');
-    if (!handle || event.button !== 0) return;
-    event.preventDefault();
-    const row = handle.closest('[data-block-row]');
-    handle.setPointerCapture(event.pointerId);
-    dragState = {row,handle,id:event.pointerId,startX:event.clientX,startY:event.clientY,target:null,after:false,moved:false};
-  });
-  container.addEventListener('pointermove', event => {
-    if (!dragState || event.pointerId !== dragState.id) return;
-    if (!dragState.moved && Math.hypot(event.clientX-dragState.startX,event.clientY-dragState.startY) < 5) return;
-    dragState.moved = true;
-    dragState.row.classList.add('block-is-dragging');
-    const target = document.elementFromPoint(event.clientX,event.clientY)?.closest('[data-block-row]');
-    container.querySelectorAll('.block-drop-before,.block-drop-after').forEach(row => row.classList.remove('block-drop-before','block-drop-after'));
-    dragState.target = target && target !== dragState.row && container.contains(target) ? target : null;
-    if (dragState.target) {
-      const rect = target.getBoundingClientRect();
-      dragState.after = event.clientY > rect.top + rect.height/2;
-      target.classList.add(dragState.after ? 'block-drop-after' : 'block-drop-before');
-    }
-    const scroller = container.querySelector('.editor-layout');
-    const bounds = scroller?.getBoundingClientRect();
-    if (bounds && event.clientY < bounds.top + 60) scroller.scrollTop -= 20;
-    else if (bounds && event.clientY > bounds.bottom - 60) scroller.scrollTop += 20;
-  });
-  container.addEventListener('pointerup', async event => {
-    if (!dragState || event.pointerId !== dragState.id) return;
-    const {row,target,after,moved,handle} = dragState;
-    if(handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
-    clearBlockDrag();
-    if (!moved || !target) return;
-    if(after) target.after(row); else target.before(row);
-    selectedBlock = row.querySelector(':scope > :not([data-block-handle])');
-    lastBlockEditor = row.parentElement;
-    if(await saveNow()) showToast('Block moved and saved', 'success');
-  });
-  container.addEventListener('pointercancel', clearBlockDrag);
-  container.addEventListener('keydown', async event => {
-    const handle = event.target.closest('[data-block-handle]');
-    if (!handle || !event.altKey || !['ArrowUp','ArrowDown'].includes(event.key)) return;
-    event.preventDefault();
-    const rows = [...container.querySelectorAll('[data-block-row]')];
-    const row = handle.closest('[data-block-row]');
-    const target = rows[rows.indexOf(row) + (event.key === 'ArrowUp' ? -1 : 1)];
-    if(!target) return;
-    if(event.key === 'ArrowUp') target.before(row); else target.after(row);
-    if(await saveNow()) showToast('Block moved and saved', 'success');
-    handle.focus();
-  });
-  decorateBlocks();
+  };
+  container.querySelector('#editor-page-ai')?.addEventListener('click', () => triggerAIPanel());
 
   const changeCover = async () => {
     const url = await requestInput('Paste an image URL (leave blank to remove the cover):', page.cover_url || '');
@@ -470,37 +482,38 @@ export async function renderEditor(container, route) {
       window.setTimeout(() => blockSearch.focus(), 0);
     }
   };
-
-  const insertAtEditor = (html, editor = lastBlockEditor) => {
-    const target = editor || container.querySelector('#editor-empty-area');
-    if (!target) return;
-    target.focus();
-    const selection = window.getSelection();
-    if (/^\/[^\s]*$/.test((target.textContent || '').trim())) {
-      target.textContent = '';
-      blockRange = null;
+  const insertAtEditor = (html) => {
+    if (notionEditor) {
+      const sel = notionEditor.quill.getSelection() || { index: notionEditor.quill.getLength() - 1, length: 0 };
+      notionEditor.quill.clipboard.dangerouslyPasteHTML(sel.index, html);
+      debouncedSave();
+      return;
     }
-    const range = blockRange && target.contains(blockRange.startContainer) ? blockRange : document.createRange();
-    if (range !== blockRange) {
-      range.selectNodeContents(target);
-      range.collapse(false);
-    }
-    selection.removeAllRanges();
-    selection.addRange(range);
-    const fragment = range.createContextualFragment(sanitizeHtml(html));
-    const firstNode = fragment.firstElementChild;
-    if (selectedBlock && target.contains(selectedBlock)) (selectedBlock.closest('[data-block-row]') || selectedBlock).after(fragment);
-    else target.append(fragment);
-    selectedBlock = firstNode;
-    blockRange = null;
-    target.dispatchEvent(new Event('input', { bubbles: true }));
   };
 
+  const defaultBlockTemplates = {
+    text: '<p><br></p>',
+    heading1: '<h1>Heading 1</h1>',
+    heading2: '<h2>Heading 2</h2>',
+    heading3: '<h3>Heading 3</h3>',
+    bulleted: '<ul><li>List item</li></ul>',
+    numbered: '<ol><li>List item</li></ol>',
+    todo: '<ul data-checked="false"><li>To-do item</li></ul>',
+    quote: '<blockquote>Quote</blockquote>',
+    code: '<pre class="ql-syntax">// Code here</pre>',
+    divider: '<hr class="motion-divider" />',
+    table: '<table class="editor-simple-table"><thead><tr><th>Header 1</th><th>Header 2</th><th>Header 3</th></tr></thead><tbody><tr><td>Data 1</td><td>Data 2</td><td>Data 3</td></tr><tr><td>Data 4</td><td>Data 5</td><td>Data 6</td></tr></tbody></table>',
+    callout: '<aside class="editor-callout"><span class="editor-callout-icon">💡</span><div class="editor-callout-text">Highlight note or callout</div></aside>',
+    toggle: '<details class="editor-toggle" open><summary>Toggle header</summary><div class="editor-toggle-content"><p>Toggle details</p></div></details>'
+  };
 
   const insertBlock = async (type) => {
-    closeBlockMenu();
+    if (type === 'ai-table') {
+      triggerAIPanel('Create a detailed table on this page with clear rows and columns for: ');
+      return;
+    }
     if (type === 'ai') {
-      if (aiPanel) aiPanel.hidden = false;
+      triggerAIPanel();
       return;
     }
     if (type === 'comment') {
@@ -517,10 +530,8 @@ export async function renderEditor(container, route) {
     if (type === 'page-link') {
       const candidates = (workspacePages || []).filter((candidate) => candidate.id !== page.id && !candidate.archived_at);
       if (!candidates.length) return showToast('Create another page before linking it', 'error');
-      const choices = candidates.map((candidate, index) => `${index + 1}: ${candidate.title || 'Untitled'}`).join('\n');
-      const answer = await requestInput(`Link which page?\n\n${choices}\n\nEnter its number:`, '1');
-      const target = candidates[Number(answer) - 1];
-      if (!target) return showToast('Choose a valid page number', 'error');
+      const target = await pickPage(candidates);
+      if (!target) return;
       insertAtEditor(`<a href="#editor/${escapeComment(target.id)}" data-page-link="${escapeComment(target.id)}">${escapeComment(target.title || 'Untitled')}</a>`);
       return;
     }
@@ -534,15 +545,12 @@ export async function renderEditor(container, route) {
       return;
     }
     clearTimeout(saveTimeout);
-    const html = await composeBlock(type);
-    if (html === null) return;
+    const html = defaultBlockTemplates[type] || '<p><br></p>';
     insertAtEditor(html);
-    if (await saveNow()) showToast(`${type.startsWith('heading') ? 'Heading' : 'Block'} applied and saved`, 'success');
+    debouncedSave();
   };
 
-  container.querySelectorAll('[data-editor-add-block], #editor-add-block').forEach((button) => {
-    button.addEventListener('click', async () => openBlockMenu(lastBlockEditor));
-  });
+
   container.querySelectorAll('[data-block-type]').forEach((button) => {
     button.addEventListener('click', async () => insertBlock(button.dataset.blockType));
   });
@@ -556,14 +564,6 @@ export async function renderEditor(container, route) {
     if (blockMenu && !blockMenu.hidden && !event.target.closest('#editor-block-menu, #editor-add-block, [data-editor-add-block]')) closeBlockMenu();
   });
   container.querySelectorAll('#editor-empty-area, #editor-blocks [contenteditable="true"]').forEach((editor) => {
-    editor.addEventListener('beforeinput', (event) => {
-      if (event.inputType === 'historyUndo' || event.inputType === 'historyRedo') return;
-      event.preventDefault();
-      lastBlockEditor = editor;
-      if (event.data === '/') { openBlockMenu(editor); return; }
-      if (selectedBlock?.isConnected) editBlock(selectedBlock);
-      else insertBlock('text');
-    });
     editor.addEventListener('click', (event) => {
       let block = event.target.closest('h1,h2,h3,p,ul,ol,details,blockquote,pre,hr,table,aside');
       while (block?.parentElement && block.parentElement !== editor && block.parentElement.closest('ul,ol,details,table,aside')) block = block.parentElement.closest('ul,ol,details,table,aside');
@@ -579,8 +579,12 @@ export async function renderEditor(container, route) {
     editor.addEventListener('focus', async () => { lastBlockEditor = editor; });
     editor.addEventListener('input', async () => {
       lastBlockEditor = editor;
-      const text = editor.textContent || '';
-      if (/^\/[^\s]*$/.test(text.trim())) openBlockMenu(editor);
+      const sel = window.getSelection();
+      const block = sel?.anchorNode?.nodeType === Node.ELEMENT_NODE ? sel.anchorNode : sel?.anchorNode?.parentElement;
+      const currentText = block?.textContent || '';
+      if (/^\/[^\s]*$/.test(currentText.trim()) || /^\/[^\s]*$/.test((editor.textContent || '').trim())) {
+        openBlockMenu(editor);
+      }
     });
     editor.addEventListener('keydown', async (event) => {
       if (event.key === 'Escape') closeBlockMenu();
@@ -601,15 +605,17 @@ export async function renderEditor(container, route) {
     return compound && lastBlockEditor?.contains(compound) ? compound : block;
   }
 
-  async function editBlock(block = getSelectedBlock()) {
+  function editBlock(block = getSelectedBlock()) {
     if (!block) return showToast('Add a block first, or click the block you want to edit.', 'error');
-    clearTimeout(saveTimeout);
-    const html = await composeBlock(getBlockType(block), block.outerHTML);
-    if (html === null || !block.isConnected) return;
-    const template = document.createElement('template'); template.innerHTML = sanitizeHtml(html);
-    selectedBlock = template.content.firstElementChild;
-    block.replaceWith(template.content);
-    if (await saveNow()) showToast('Block updated and saved', 'success');
+    selectedBlock = block;
+    lastBlockEditor?.focus();
+    const focusTarget = block.querySelector('span:not(.editor-callout-icon), summary, p, li, code, th, td') || block;
+    focusTarget.focus?.();
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(focusTarget);
+    sel.removeAllRanges();
+    sel.addRange(range);
   }
 
   async function deleteBlock(block = getSelectedBlock()) {
@@ -618,17 +624,20 @@ export async function renderEditor(container, route) {
     if (!await requestConfirmation(`Are you sure you want to delete “${preview}”?`)) return;
     if (!block.isConnected) return;
     const parent = block.parentNode;
-    const parentHost = parent.parentNode;
-    const parentNext = parent.nextSibling;
+    const parentHost = parent?.parentNode;
+    const parentNext = parent?.nextSibling;
     const next = block.nextSibling;
     block.remove();
     selectedBlock = null;
     blockRange = null;
+    if (notionEditor?.quill) {
+      notionEditor.quill.update();
+    }
     if (await saveNow()) {
       showToast('Block deleted', 'success');
     } else {
-      if (!parent.isConnected && parentHost?.isConnected) parentHost.insertBefore(parent, parentNext?.parentNode === parentHost ? parentNext : null);
-      parent.insertBefore(block, next?.parentNode === parent ? next : null);
+      if (parent && !parent.isConnected && parentHost?.isConnected) parentHost.insertBefore(parent, parentNext?.parentNode === parentHost ? parentNext : null);
+      if (parent?.isConnected) parent.insertBefore(block, next?.parentNode === parent ? next : null);
       selectedBlock = block;
       writeLocalDraft(page.id, { title: titleEl?.textContent || 'Untitled', html: editorHtml() });
     }
@@ -639,7 +648,7 @@ export async function renderEditor(container, route) {
   contextMenu.setAttribute('role', 'menu');
   contextMenu.setAttribute('aria-label', 'Block actions');
   contextMenu.hidden = true;
-  contextMenu.innerHTML = '<button type="button" role="menuitem" data-context-edit><span class="material-symbols-outlined" aria-hidden="true">edit</span>Edit</button><button type="button" role="menuitem" data-context-delete><span class="material-symbols-outlined" aria-hidden="true">delete</span>Delete</button>';
+  contextMenu.innerHTML = '<button type="button" role="menuitem" data-context-ai><span class="material-symbols-outlined" style="color:var(--primary)" aria-hidden="true">auto_awesome</span>Edit with AI</button><button type="button" role="menuitem" data-context-edit><span class="material-symbols-outlined" aria-hidden="true">edit</span>Edit</button><button type="button" role="menuitem" data-context-delete><span class="material-symbols-outlined" aria-hidden="true">delete</span>Delete</button>';
   container.append(contextMenu);
   let contextBlock = null;
   let contextEvents;
@@ -648,31 +657,43 @@ export async function renderEditor(container, route) {
     contextBlock?.classList.remove('block-context-selected');
     contextEvents?.abort();
   };
+
+  function showBlockContextMenu(block, x, y) {
+    if (!block) return;
+    closeBlockMenu();
+    closeContextMenu();
+    selectedBlock = contextBlock = block;
+    block.classList.add('block-context-selected');
+    contextMenu.hidden = false;
+    contextMenu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - contextMenu.offsetWidth - 8))}px`;
+    contextMenu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - contextMenu.offsetHeight - 8))}px`;
+    contextEvents = new AbortController();
+    const signal = contextEvents.signal;
+    document.addEventListener('pointerdown', outside => { if (!contextMenu.contains(outside.target)) closeContextMenu(); }, { signal });
+    window.addEventListener('scroll', closeContextMenu, { capture: true, signal });
+    window.addEventListener('resize', closeContextMenu, { signal });
+    window.addEventListener('hashchange', closeContextMenu, { signal });
+    contextMenu.querySelector('button')?.focus();
+  }
+
   function openContextMenu(event, editor) {
     let block = event.target.closest('h1,h2,h3,p,ul,ol,details,blockquote,pre,hr,table,aside');
     if (!block || !editor.contains(block)) return;
     const compound = block.parentElement?.closest('ul,ol,details,table,aside');
     if (compound && editor.contains(compound)) block = compound;
     event.preventDefault();
-    closeBlockMenu();
-    closeContextMenu();
     lastBlockEditor = editor;
-    selectedBlock = contextBlock = block;
-    block.classList.add('block-context-selected');
-    contextMenu.hidden = false;
     const rect = block.getBoundingClientRect();
     const x = event.clientX || rect.left + 16;
     const y = event.clientY || rect.top + 16;
-    contextMenu.style.left = `${Math.max(8, Math.min(x, window.innerWidth - contextMenu.offsetWidth - 8))}px`;
-    contextMenu.style.top = `${Math.max(8, Math.min(y, window.innerHeight - contextMenu.offsetHeight - 8))}px`;
-    contextEvents = new AbortController();
-    const signal = contextEvents.signal;
-    document.addEventListener('pointerdown', outside => { if (!contextMenu.contains(outside.target)) closeContextMenu(); }, {signal});
-    window.addEventListener('scroll', closeContextMenu, {capture:true,signal});
-    window.addEventListener('resize', closeContextMenu, {signal});
-    window.addEventListener('hashchange', closeContextMenu, {signal});
-    contextMenu.querySelector('button').focus();
+    showBlockContextMenu(block, x, y);
   }
+  contextMenu.querySelector('[data-context-ai]')?.addEventListener('click', () => {
+    const block = contextBlock; closeContextMenu();
+    if (!block) return;
+    const text = (block.textContent || '').trim();
+    triggerAIPanel(`Rewrite, enhance, or convert this paragraph into an organized table:\n"${text}"`);
+  });
   contextMenu.querySelector('[data-context-edit]').addEventListener('click', () => {
     const block = contextBlock; closeContextMenu(); editBlock(block);
   });
@@ -693,45 +714,29 @@ export async function renderEditor(container, route) {
     editor.addEventListener('keydown', event => {
       if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
         const block = getSelectedBlock();
-        if (block) openContextMenu({target:block, preventDefault:() => event.preventDefault()}, editor);
+        if (block) openContextMenu({ target: block, preventDefault: () => event.preventDefault() }, editor);
       }
     });
   });
 
   container.querySelector('#editor-add-task')?.addEventListener('click', async () => {
     if (!AppState.workspace?.id) return showToast('No workspace is selected', 'error');
-    const title = await requestInput('Task title:');
-    if (!title?.trim()) return;
-    const priorityInput = await requestInput('Priority: low, medium, high, or urgent', 'medium');
-    if (priorityInput === null) return;
-    const priority = ['low', 'medium', 'high', 'urgent'].includes(priorityInput.trim().toLowerCase())
-      ? priorityInput.trim().toLowerCase()
-      : 'medium';
-    const dueDateInput = await requestInput('Due date (YYYY-MM-DD, optional):', '');
-    if (dueDateInput === null) return;
-    const dueDate = dueDateInput.trim();
-    if (dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) return showToast('Use the date format YYYY-MM-DD', 'error');
-    const { data: task, error: taskError } = await createTask(title.trim(), {
-      workspaceId: AppState.workspace.id,
-      pageId: page.id,
-      priority,
-      dueDate: dueDate || null,
-      assigneeId: AppState.user?.id || null
-    });
+    const { data: members } = await getWorkspaceMembers(AppState.workspace.id);
+    const draft = await requestNewTask({ members: members || [], heading: `New task on “${page.title || 'Untitled'}”` });
+    if (!draft) return;
+    const { title, ...options } = draft;
+    const { data: task, error: taskError } = await createTask(title, { ...options, workspaceId: AppState.workspace.id, pageId: page.id });
     if (taskError) return showToast(`Could not create task: ${taskError.message}`, 'error');
-    showToast('Task linked to this page', 'success');
-    window.location.hash = `kanban?task=${encodeURIComponent(task.id)}`;
+    showToast(`Task “${task?.title || title}” added to this page`, 'success');
+    await renderEditor(container, route);
+    container.querySelector('.editor-related')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   });
 
   container.querySelector('#editor-link-page')?.addEventListener('click', async () => {
     const candidates = (workspacePages || []).filter((candidate) => candidate.id !== page.id && !candidate.archived_at);
     if (!candidates.length) return showToast('Create another page before linking it', 'error');
-    const choices = candidates.map((candidate, index) => `${index + 1}: ${candidate.title || 'Untitled'}`).join('\n');
-    const answer = await requestInput(`Link which page?\n\n${choices}\n\nEnter its number:`, '1');
-    if (answer === null) return;
-    const index = Number(answer) - 1;
-    const target = Number.isInteger(index) ? candidates[index] : null;
-    if (!target) return showToast('Choose a valid page number', 'error');
+    const target = await pickPage(candidates);
+    if (!target) return;
     const linkHtml = `<a href="#editor/${escapeComment(target.id)}" data-page-link="${escapeComment(target.id)}">${escapeComment(target.title || 'Untitled')}</a>`;
     const editor = container.querySelector('#editor-empty-area') || container.querySelector('#editor-blocks [contenteditable="true"]');
     if (!editor) return showToast('This page is not ready for editing', 'error');
@@ -793,9 +798,7 @@ export async function renderEditor(container, route) {
 
   container.querySelector('#editor-export-markdown')?.addEventListener('click', async () => {
     const title = titleEl?.textContent?.trim() || 'Untitled';
-    const blocksEl = container.querySelector('#editor-blocks');
-    const emptyEl = container.querySelector('#editor-empty-area');
-    const html = `${blocksEl?.innerHTML || ''}${emptyEl?.innerHTML || ''}`;
+    const html = notionEditor ? notionEditor.getHtml() : '';
     const markdown = `# ${title}\n\n${htmlToMarkdown(html).trim()}\n`;
     const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' });
     const link = document.createElement('a');
@@ -812,6 +815,7 @@ export async function renderEditor(container, route) {
     if (!file) return;
     const markdown = await file.text();
     const html = markdownToHtml(markdown);
+    if (notionEditor) notionEditor.setHtml(html);
     const { error: importError } = await updatePage(page.id, { content: { ...(page.content || {}), html } });
     if (importError) return showToast(`Could not import Markdown: ${importError.message}`, 'error');
     showToast('Markdown imported', 'success');
@@ -847,9 +851,7 @@ export async function renderEditor(container, route) {
   container.querySelector('#editor-duplicate-page')?.addEventListener('click', async () => {
     if (!AppState.workspace?.id) return showToast('No workspace is selected', 'error');
     const title = `${page.title || 'Untitled'} copy`;
-    const blocksEl = container.querySelector('#editor-blocks');
-    const emptyEl = container.querySelector('#editor-empty-area');
-    const html = `${blocksEl?.innerHTML || ''}${emptyEl?.innerHTML || ''}`;
+    const html = notionEditor ? notionEditor.getHtml() : '';
     const duplicateContent = { ...(page.content || {}), html: sanitizeHtml(html) };
     const { data: duplicate, error: duplicateError } = await createPage(
       AppState.workspace.id,
@@ -886,14 +888,13 @@ export async function renderEditor(container, route) {
     const candidates = (pages || []).filter(
       (candidate) => candidate.id !== page.id && !candidate.archived_at && !isPageDescendant(candidate.id, page.id, pages)
     );
-    const choices = ['(root page)', ...candidates.map((candidate) => candidate.title || 'Untitled')];
-    const answer = await requestInput(`Move “${page.title || 'Untitled'}” under which page?\n\n${choices.map((choice, index) => `${index}: ${choice}`).join('\n')}\n\nEnter a number, or leave blank for root:`, '0');
-    if (answer === null) return;
-    const selectedIndex = answer.trim() === '' ? 0 : Number(answer);
-    if (!Number.isInteger(selectedIndex) || selectedIndex < 0 || selectedIndex >= choices.length) {
-      return showToast('Choose a valid page number', 'error');
-    }
-    const parent = selectedIndex === 0 ? null : candidates[selectedIndex - 1];
+    const choice = await requestChoice({
+      title: `Move “${page.title || 'Untitled'}” to…`,
+      placeholder: 'Search pages and projects…',
+      items: [{ id: '', label: 'Top level (no parent)', icon: '⬆️' }, ...candidates.map((candidate) => ({ id: candidate.id, label: candidate.title || 'Untitled', icon: candidate.page_type === 'project' ? '📁' : candidate.icon || '📄', hint: candidate.page_type === 'project' ? 'Project' : '' }))]
+    });
+    if (!choice) return;
+    const parent = choice.id ? candidates.find((candidate) => candidate.id === choice.id) : null;
     if (parent?.id === page.id) return showToast('A page cannot contain itself', 'error');
     const { error: moveError } = await updatePage(page.id, { parent_id: parent?.id || null });
     if (moveError) return showToast(`Could not move page: ${moveError.message}`, 'error');
@@ -902,7 +903,7 @@ export async function renderEditor(container, route) {
   container.querySelectorAll('[data-ai-action]').forEach((button) => {
     button.addEventListener('click', async () => {
       const output = container.querySelector('#editor-ai-output');
-      const text = `${titleEl?.textContent || ''}\n${container.querySelector('#editor-blocks')?.textContent || ''}\n${container.querySelector('#editor-empty-area')?.textContent || ''}`;
+      const text = `${titleEl?.textContent || ''}\n${notionEditor ? notionEditor.quill.getText() : ''}`;
       button.disabled = true;
       if (output) output.textContent = 'Working…';
       const result = await assistWithText(text, button.dataset.aiAction);
@@ -928,12 +929,88 @@ export async function renderEditor(container, route) {
     });
   });
 
+  let commentMembers = [];
+  const membersReady = AppState.workspace?.id
+    ? getWorkspaceMembers(AppState.workspace.id).then(({ data }) => { commentMembers = data || []; }).catch(() => {})
+    : Promise.resolve();
+
+  const postComment = async (content, parentId = null) => {
+    const mentions = extractMentionIds(content, commentMembers, AppState.user?.id);
+    const result = await createComment(page.id, content, parentId, mentions);
+    if (!result.error && mentions.length) {
+      showToast(`Notified ${mentions.map((id) => memberLabel(commentMembers.find((member) => member.user_id === id))).join(', ')}`, 'success');
+    }
+    return result;
+  };
+
+  // ---------- Page toolbar: menus, share, history, templates, AI ----------
+  const closeMenus = () => container.querySelectorAll('.page-menu').forEach((menu) => {
+    menu.hidden = true;
+    menu.previousElementSibling?.setAttribute('aria-expanded', 'false');
+  });
+  container.querySelectorAll('#page-ai-btn, #page-more-btn').forEach((button) => button.addEventListener('click', (event) => {
+    event.stopPropagation();
+    const menu = button.nextElementSibling;
+    const willOpen = menu.hidden;
+    closeMenus();
+    menu.hidden = !willOpen;
+    button.setAttribute('aria-expanded', String(willOpen));
+    if (willOpen) menu.querySelector('button')?.focus();
+  }));
+  container.querySelectorAll('.page-menu').forEach((menu) => {
+    menu.addEventListener('click', (event) => { if (event.target.closest('button')) closeMenus(); });
+    menu.addEventListener('keydown', (event) => {
+      const items = [...menu.querySelectorAll('button')];
+      const index = items.indexOf(document.activeElement);
+      if (event.key === 'Escape') { closeMenus(); menu.previousElementSibling?.focus(); }
+      if (event.key === 'ArrowDown') { event.preventDefault(); items[(index + 1) % items.length]?.focus(); }
+      if (event.key === 'ArrowUp') { event.preventDefault(); items[(index - 1 + items.length) % items.length]?.focus(); }
+    });
+  });
+  if (!container.__pageMenuCloser) {
+    container.__pageMenuCloser = (event) => {
+      if (!event.target.closest('.page-menu-wrap')) container.querySelectorAll('.page-menu').forEach((menu) => { menu.hidden = true; });
+    };
+    document.addEventListener('click', container.__pageMenuCloser);
+  }
+
+  container.querySelector('#page-share-btn')?.addEventListener('click', () => openShareDialog(page));
+  container.querySelector('#page-history-btn')?.addEventListener('click', () => openHistory(page, async () => renderEditor(container, route)));
+  container.querySelector('#page-save-template')?.addEventListener('click', async () => {
+    const isProjectPage = page.page_type === 'project';
+    let projectTasks = [];
+    if (isProjectPage) {
+      const { data: allTasks } = await getTasks({ workspaceId: AppState.workspace?.id });
+      projectTasks = tasksForProject(allTasks || [], workspacePages || [], page.id);
+    }
+    await saveAsTemplate({ ...page, content: { ...(page.content || {}), html: notionEditor ? cleanBlockContent(notionEditor.getHtml()) : page.content?.html || '' } }, { isProject: isProjectPage, tasks: projectTasks });
+  });
+  container.querySelectorAll('[data-page-ai]').forEach((button) => button.addEventListener('click', async () => {
+    await saveNow?.();
+    const title = page.title || 'Untitled';
+    const prompts = {
+      summarize: `Summarize the page “${title}” in a few bullet points: key points, decisions, and open questions.`,
+      tasks: `Read the page “${title}” and turn its action items into tasks${owningProject ? ` in the project “${owningProject.title}”` : ''}. Use owners and due dates mentioned in the text when they match team members; otherwise leave them empty. Propose the tasks.`,
+      status: `Write a short status update about “${title}” (what is done, what is next, any blockers) and propose posting it as a comment on that page.`,
+      improve: `Suggest concrete improvements to the page “${title}”: missing sections, unclear parts, and better structure. If useful, propose adding the missing sections to the page.`
+    };
+    let prompt = prompts[button.dataset.pageAi];
+    if (button.dataset.pageAi === 'ask') {
+      const question = await requestInput(`What do you want to know about “${title}”?`, '');
+      if (!question?.trim()) return;
+      prompt = `About the page “${title}”: ${question.trim()}`;
+    }
+    try { sessionStorage.setItem('motion-ai-pending', JSON.stringify({ prompt, pageId: page.id })); } catch { /* ignore */ }
+    window.location.hash = 'ai-chat?new=1';
+  }));
+
   async function loadComments() {
     const panel = container.querySelector('#editor-comments');
     const list = panel?.querySelector('.editor-comments-list');
     if (!list) return;
 
-    const { data: comments, error } = await getComments(page.id);
+    const draftText = list.querySelector('#editor-comment-form textarea')?.value || '';
+    const [{ data: comments, error }] = await Promise.all([getComments(page.id), membersReady]);
     if (error) {
       list.innerHTML = '<p class="editor-comments-empty">Comments will be available when collaboration is enabled.</p>';
       return;
@@ -945,19 +1022,63 @@ export async function renderEditor(container, route) {
       children.push(comment);
       childrenByParent.set(comment.parent_id, children);
     });
-    const renderThread = (comment, depth = 0) => `${renderComment(comment, AppState.user?.id, depth)}${(childrenByParent.get(comment.id) || []).map((child) => renderThread(child, Math.min(depth + 1, 3))).join('')}`;
+    const renderThread = (comment, depth = 0) => `${renderComment(comment, AppState.user?.id, depth, commentMembers)}${(childrenByParent.get(comment.id) || []).map((child) => renderThread(child, Math.min(depth + 1, 3))).join('')}`;
     const rootComments = childrenByParent.get(null) || comments.filter((comment) => !comment.parent_id);
+    const isResolvedThread = (comment) => String(comment.content || '').startsWith('[RESOLVED] ');
+    const openCount = rootComments.filter((comment) => !isResolvedThread(comment)).length;
+    const resolvedCount = rootComments.length - openCount;
+    const filter = container.__commentFilter || 'open';
+    const shownRoots = rootComments.filter((comment) => filter === 'all' || (filter === 'open' ? !isResolvedThread(comment) : isResolvedThread(comment)));
+    const filterBar = rootComments.length ? `<div class="comment-filter" role="tablist" aria-label="Show threads">
+        ${[['open', `Open ${openCount}`], ['resolved', `Resolved ${resolvedCount}`], ['all', 'All']].map(([value, label]) => `<button type="button" role="tab" data-comment-filter="${value}" aria-selected="${filter === value}" class="${filter === value ? 'is-active' : ''}">${label}</button>`).join('')}
+        ${openCount > 1 ? '<button type="button" class="comment-next" data-comment-next title="Jump to the next open thread"><span class="material-symbols-outlined">south</span>Next open</button>' : ''}
+      </div>` : '';
+    const emptyText = !comments.length
+      ? 'No comments yet. Start a conversation — select text in the page to comment on it, or write below.'
+      : filter === 'open' ? 'No open threads. Everything is resolved 🎉' : 'Nothing here.';
 
     list.innerHTML = `
-      ${comments.length ? rootComments.map((comment) => renderThread(comment)).join('') : '<p class="editor-comments-empty">No comments yet. Start a conversation.</p>'}
+      ${filterBar}
+      ${shownRoots.length ? shownRoots.map((comment) => renderThread(comment)).join('') : `<p class="editor-comments-empty">${emptyText}</p>`}
       <form class="editor-comment-form" id="editor-comment-form">
-        <textarea name="content" rows="3" placeholder="Write a comment..." required></textarea>
-        <button type="submit" class="modal-btn-primary">
-          <span class="material-symbols-outlined text-sm">send</span>
-          Comment
-        </button>
+        <textarea name="content" rows="3" placeholder="Write a comment… Type @ to mention a teammate." required></textarea>
+        <div class="editor-comment-form-row">
+          <small>Ctrl/⌘ + Enter to post</small>
+          <button type="submit" class="modal-btn-primary">
+            <span class="material-symbols-outlined text-sm">send</span>
+            Comment
+          </button>
+        </div>
       </form>
     `;
+
+    list.querySelectorAll('[data-comment-filter]').forEach((button) => button.addEventListener('click', () => {
+      container.__commentFilter = button.dataset.commentFilter;
+      loadComments();
+    }));
+    list.querySelector('[data-comment-next]')?.addEventListener('click', () => {
+      const openThreads = [...list.querySelectorAll('.editor-comment:not(.comment-resolved)')].filter((article) => article.style.marginLeft === '0rem' || !article.style.marginLeft);
+      if (!openThreads.length) return;
+      container.__commentCursor = ((container.__commentCursor ?? -1) + 1) % openThreads.length;
+      const target = openThreads[container.__commentCursor];
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      target.classList.add('comment-highlight-pulse');
+      window.setTimeout(() => target.classList.remove('comment-highlight-pulse'), 1600);
+      const mark = container.querySelector(`.motion-comment-highlight[data-comment-id="${target.dataset.commentId}"]`);
+      mark?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+
+    const mainTextarea = list.querySelector('#editor-comment-form textarea');
+    if (mainTextarea) {
+      mainTextarea.value = draftText;
+      attachMentionPicker(mainTextarea, () => commentMembers);
+      mainTextarea.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+          event.preventDefault();
+          event.currentTarget.form?.requestSubmit();
+        }
+      });
+    }
 
     list.querySelector('#editor-comment-form')?.addEventListener('submit', async (event) => {
       event.preventDefault();
@@ -967,12 +1088,13 @@ export async function renderEditor(container, route) {
       if (!content) return;
       const button = form.querySelector('button');
       button.disabled = true;
-      const { error: createError } = await createComment(page.id, content);
+      const { error: createError } = await postComment(content);
       if (createError) {
         button.disabled = false;
         showToast(`Could not post comment: ${createError.message}`, 'error');
         return;
       }
+      textarea.value = '';
       await loadComments();
     });
 
@@ -997,13 +1119,74 @@ export async function renderEditor(container, route) {
       });
     });
 
-    list.querySelectorAll('[data-comment-reply]').forEach((button) => {
+    list.querySelectorAll('[data-comment-resolve]').forEach((button) => {
       button.addEventListener('click', async () => {
-        const content = await requestInput('Write a reply:');
-        if (content === null || !content.trim()) return;
-        const { error: replyError } = await createComment(page.id, content.trim(), button.dataset.commentReply);
-        if (replyError) return showToast(`Could not add reply: ${replyError.message}`, 'error');
+        const comment = comments.find((item) => item.id === button.dataset.commentResolve);
+        if (!comment) return;
+        const isResolved = comment.content.startsWith('[RESOLVED] ');
+        const nextContent = isResolved ? comment.content.replace('[RESOLVED] ', '') : `[RESOLVED] ${comment.content}`;
+        const { error: updateError } = await updateComment(comment.id, nextContent);
+        if (updateError) return showToast(`Could not update comment: ${updateError.message}`, 'error');
+        if (!isResolved && notionEditor) {
+          const delta = notionEditor.quill.getContents();
+          let pos = 0;
+          delta.ops.forEach(op => {
+            const len = typeof op.insert === 'string' ? op.insert.length : 1;
+            if (op.attributes && op.attributes.comment === comment.id) {
+              notionEditor.quill.formatText(pos, len, 'comment', false);
+            }
+            pos += len;
+          });
+          await saveNow();
+        }
+        showToast(isResolved ? 'Comment reopened' : 'Comment marked resolved', 'success');
         await loadComments();
+      });
+    });
+
+    list.querySelectorAll('[data-comment-reply]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const article = button.closest('.editor-comment');
+        const existing = list.querySelector('.editor-reply-form');
+        if (existing) {
+          const sameThread = existing.dataset.parent === button.dataset.commentReply;
+          existing.remove();
+          if (sameThread) return;
+        }
+        const form = document.createElement('form');
+        form.className = 'editor-comment-form editor-reply-form';
+        form.dataset.parent = button.dataset.commentReply;
+        form.style.marginLeft = article?.style.marginLeft || '0';
+        form.innerHTML = `
+          <textarea name="content" rows="2" placeholder="Reply… Type @ to mention someone." required></textarea>
+          <div class="editor-comment-form-row">
+            <button type="button" class="modal-btn-secondary" data-cancel>Cancel</button>
+            <button type="submit" class="modal-btn-primary">Reply</button>
+          </div>`;
+        article?.after(form);
+        const replyBox = form.elements.content;
+        attachMentionPicker(replyBox, () => commentMembers);
+        const author = article?.querySelector('.editor-comment-meta strong')?.textContent?.trim();
+        const authorMember = commentMembers.find((member) => memberLabel(member) === author && member.user_id !== AppState.user?.id);
+        if (authorMember) replyBox.value = `@${memberLabel(authorMember)} `;
+        replyBox.focus();
+        replyBox.setSelectionRange(replyBox.value.length, replyBox.value.length);
+        form.querySelector('[data-cancel]').addEventListener('click', () => form.remove());
+        replyBox.addEventListener('keydown', (event) => {
+          if (event.key === 'Escape') form.remove();
+          if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); form.requestSubmit(); }
+        });
+        form.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const content = replyBox.value.trim();
+          if (!content) return;
+          const submit = form.querySelector('[type=submit]');
+          submit.disabled = true;
+          const { error: replyError } = await postComment(content, button.dataset.commentReply);
+          submit.disabled = false;
+          if (replyError) return showToast(`Could not add reply: ${replyError.message}`, 'error');
+          await loadComments();
+        });
       });
     });
   }
@@ -1014,6 +1197,8 @@ export async function renderEditor(container, route) {
       window.removeEventListener('motion:comments-changed', handleRemoteComments);
       return;
     }
+    // Don't wipe a reply someone is in the middle of writing.
+    if (container.querySelector('.editor-reply-form textarea')?.value.trim()) return;
     loadComments();
   };
   if (container.__motionCommentsHandler) {
@@ -1025,6 +1210,8 @@ export async function renderEditor(container, route) {
   const handleRemotePage = (event) => {
     if (event.detail !== page.id || !container.isConnected) return;
     if (document.activeElement?.isContentEditable) return;
+    // With live co-editing, teammates' changes already arrived; don't reload the page.
+    if (container.__liveCollab?.peerCount() > 0) return;
     renderEditor(container, route);
   };
   if (container.__motionPageHandler) {
@@ -1097,17 +1284,34 @@ function isPageDescendant(candidateId, ancestorId, pages = []) {
   return false;
 }
 
-function renderComment(comment, currentUserId, depth = 0) {
+async function pickPage(candidates) {
+  const choice = await requestChoice({
+    title: 'Link to a page',
+    placeholder: 'Search pages…',
+    items: candidates.map((candidate) => ({ id: candidate.id, label: candidate.title || 'Untitled', icon: candidate.icon || '📄', hint: candidate.updated_at ? `Edited ${timeAgo(candidate.updated_at)}` : '' }))
+  });
+  return choice ? candidates.find((candidate) => candidate.id === choice.id) : null;
+}
+
+function renderComment(comment, currentUserId, depth = 0, members = []) {
   const author = comment.author?.name || 'Workspace member';
+  const isResolved = String(comment.content || '').startsWith('[RESOLVED] ');
+  const displayContent = isResolved ? comment.content.replace('[RESOLVED] ', '') : comment.content;
+
   return `
-    <article class="editor-comment" style="margin-left:${depth * 1.25}rem">
+    <article class="editor-comment ${isResolved ? 'comment-resolved opacity-60' : ''}" data-comment-id="${comment.id}" id="comment-${comment.id}" style="margin-left:${depth * 1.25}rem">
       <div class="editor-comment-meta">
         <span class="editor-comment-avatar">${escapeComment(author.slice(0, 1).toUpperCase())}</span>
         <strong>${escapeComment(author)}</strong>
         <time>${timeAgo(comment.created_at)}</time>
-        <span class="editor-comment-actions"><button type="button" data-comment-reply="${comment.id}">Reply</button>${comment.user_id === currentUserId ? `<button type="button" data-comment-edit="${comment.id}">Edit</button><button type="button" data-comment-delete="${comment.id}">Delete</button>` : ''}</span>
+        ${isResolved ? '<span class="text-[11px] text-primary font-semibold">✓ Resolved</span>' : ''}
+        <span class="editor-comment-actions">
+          <button type="button" data-comment-resolve="${comment.id}" title="${isResolved ? 'Reopen comment' : 'Resolve comment'}">${isResolved ? 'Reopen' : 'Resolve'}</button>
+          <button type="button" data-comment-reply="${comment.id}">Reply</button>
+          ${comment.user_id === currentUserId ? `<button type="button" data-comment-edit="${comment.id}">Edit</button><button type="button" data-comment-delete="${comment.id}">Delete</button>` : ''}
+        </span>
       </div>
-      <p>${escapeComment(comment.content)}</p>
+      <p>${renderMentionsHtml(displayContent, members, Array.isArray(comment.mentions) ? comment.mentions : null)}</p>
     </article>
   `;
 }

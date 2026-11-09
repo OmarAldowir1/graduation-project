@@ -9,13 +9,22 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "test:ai": "node --test tests/ai-blocks.test.js tests/page-ai-handler.test.js tests/text-ai-handler.test.js tests/agent.test.js",
+    "test:collab": "node --test tests/collaboration.test.js tests/projects.test.js",
     "preview": "vite preview",
     "check": "npm run lint && npm run build"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.105.1",
+    "jszip": "^3.10.2",
+    "pdfjs-dist": "^5.7.284",
+    "quill": "^2.0.3",
+    "quill-cursors": "^4.3.0",
     "react": "^19.2.5",
-    "react-dom": "^19.2.5"
+    "react-dom": "^19.2.5",
+    "y-protocols": "^1.0.7",
+    "y-quill": "^1.0.0",
+    "yjs": "^13.6.33"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

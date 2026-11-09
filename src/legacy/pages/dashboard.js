@@ -1,267 +1,198 @@
-import { requestInput } from "../../lib/dialogs.js";
 // ============================================
-// MOTION — Dashboard Page Module (Legacy)
+// MOTION — Home: my tasks, projects, team activity, getting started
 // ============================================
-
 import { AppState, setBreadcrumb, showToast } from '../app.js';
-import { getRecentPages, getTasks, getTaskCounts, createTask, toggleTask, timeAgo } from '../../lib/queries.js';
+import { getPages, getTasks, getWorkspaceMembers, getNotifications, toggleTask, createTask, timeAgo } from '../../lib/queries.js';
+import { supabase } from '../../lib/supabase.js';
 import { escapeHtml } from '../../lib/sanitize.js';
+import { listProjects, buildProjectIndex, tasksForProject, projectProgress, isOverdue, sortTasksForFocus, PROJECT_TEMPLATES } from '../../lib/projects.js';
+import { startNewProject } from '../../lib/projectActions.js';
+import { requestNewTask, openTaskDetails } from '../../lib/taskDetails.js';
+import { describeNotification } from '../../lib/notificationText.js';
+
+function checklistKey() {
+  return `motion-onboarding-dismissed-${AppState.workspace?.id || 'none'}`;
+}
+function readDismissed() {
+  try { return localStorage.getItem(checklistKey()) === '1'; } catch { return false; }
+}
 
 export async function renderDashboard(container) {
-  setBreadcrumb('Dashboard');
+  setBreadcrumb('Home');
+  const workspaceId = AppState.workspace?.id;
+  const me = AppState.user?.id;
 
-  const [pagesResult, tasksResult, countsResult] = await Promise.all([
-    getRecentPages(4, AppState.workspace?.id),
-    getTasks({ limit: 5, workspaceId: AppState.workspace?.id }),
-    getTaskCounts(AppState.workspace?.id)
+  const [pagesResult, tasksResult, membersResult, notificationsResult, commentsResult] = await Promise.all([
+    workspaceId ? getPages(workspaceId) : Promise.resolve({ data: [] }),
+    getTasks({ workspaceId }),
+    workspaceId ? getWorkspaceMembers(workspaceId) : Promise.resolve({ data: [] }),
+    getNotifications(8),
+    supabase.from('comments').select('id', { count: 'exact', head: true })
   ]);
-
-  const loadError = pagesResult.error || tasksResult.error || countsResult.error;
-  if (loadError) {
-    container.innerHTML = `<div class="error-state m-8"><span class="material-symbols-outlined">error</span><h3>Failed to load dashboard</h3><p>${escapeHtml(loadError.message || 'Please try again.')}</p><button id="dashboard-retry" class="mt-4 px-4 py-2 bg-primary text-on-primary rounded-lg text-sm font-semibold" type="button">Retry</button></div>`;
-    container.querySelector('#dashboard-retry')?.addEventListener('click', async () => renderDashboard(container));
+  if (tasksResult.error || pagesResult.error) {
+    const message = (tasksResult.error || pagesResult.error)?.message || 'Please try again.';
+    container.innerHTML = `<div class="error-state m-8"><span class="material-symbols-outlined">error</span><h3>Could not load your home</h3><p>${escapeHtml(message)}</p><button id="home-retry" type="button">Try again</button></div>`;
+    container.querySelector('#home-retry')?.addEventListener('click', () => renderDashboard(container));
     return;
   }
 
   const pages = pagesResult.data || [];
   const tasks = tasksResult.data || [];
-  const counts = countsResult.data || { total: 0, todo: 0, in_progress: 0, done: 0, overdue: 0 };
-  const userName = AppState.profile?.name || AppState.user?.email?.split('@')[0] || 'there';
-  const safeUserName = escapeHtml(userName);
-  const pending = counts.todo + counts.in_progress;
+  const members = membersResult.data || [];
+  const projects = listProjects(pages);
+  const projectIndex = buildProjectIndex(pages);
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  const myTasks = sortTasksForFocus(tasks.filter((task) => task.assignee_id === me && task.status !== 'done' && !task.completed));
+  const unassigned = tasks.filter((task) => !task.assignee_id && task.status !== 'done' && !task.completed);
+  const overdueMine = myTasks.filter((task) => isOverdue(task));
+  const firstName = escapeHtml((AppState.profile?.name || AppState.user?.email?.split('@')[0] || 'there').split(' ')[0]);
+  const teamName = escapeHtml(AppState.workspace?.name || 'your team');
 
-  // Calculate real checklist progress
-  const hasPages = pages.length > 0;
-  const hasTasks = counts.total > 0;
-  const hasWorkspace = !!AppState.workspace;
-  const checkItems = [hasWorkspace, hasPages, hasTasks];
-  const completedItems = checkItems.filter(Boolean).length;
-  const progressPct = Math.round((completedItems / checkItems.length) * 100);
+  const steps = [
+    { id: 'project', done: projects.length > 0, label: 'Create a project', hint: 'A shared home for the plan, tasks and pages.', action: 'new-project' },
+    { id: 'invite', done: members.length > 1, label: 'Invite a teammate', hint: 'Collaboration starts with a second person.', href: '#settings?section=team' },
+    { id: 'assign', done: tasks.some((task) => task.assignee_id && task.assignee_id !== me), label: 'Give a teammate a task', hint: 'Every task should have one owner.', href: projects[0] ? `#project/${projects[0].id}/tasks` : null, action: projects[0] ? null : 'new-project' },
+    { id: 'discuss', done: (commentsResult.count || 0) > 0, label: 'Start a discussion', hint: 'Comment on the plan and @mention someone.', href: projects[0] ? `#editor/${projects[0].id}` : null, action: projects[0] ? null : 'new-project' }
+  ];
+  const stepsDone = steps.filter((step) => step.done).length;
+  const showChecklist = stepsDone < steps.length && !readDismissed();
+
+  const taskRow = (task) => {
+    const project = projectById.get(projectIndex.get(task.page_id));
+    return `<li class="home-task ${isOverdue(task) ? 'is-overdue' : ''}">
+      <button type="button" class="project-task-check" data-toggle="${escapeHtml(task.id)}" aria-label="Mark “${escapeHtml(task.title)}” as done"><span class="material-symbols-outlined">radio_button_unchecked</span></button>
+      <button type="button" class="project-task-title" data-open="${escapeHtml(task.id)}">${escapeHtml(task.title)}</button>
+      ${project ? `<a class="home-chip" href="#project/${escapeHtml(project.id)}">${escapeHtml(project.icon || '📁')} ${escapeHtml(project.title)}</a>` : '<span></span>'}
+      <span class="project-task-meta ${isOverdue(task) ? 'is-overdue' : ''}">${task.due_date ? `${isOverdue(task) ? 'Overdue' : 'Due'} ${escapeHtml(task.due_date)}` : ''}</span>
+    </li>`;
+  };
+
+  const projectCard = (project) => {
+    const progress = projectProgress(tasksForProject(tasks, pages, project.id));
+    return `<a class="home-project" href="#project/${escapeHtml(project.id)}">
+      <span class="home-project-icon">${escapeHtml(project.icon || '📁')}</span>
+      <strong>${escapeHtml(project.title || 'Untitled project')}</strong>
+      <div class="project-progress-track"><span style="width:${progress.percent}%"></span></div>
+      <small>${progress.total ? `${progress.done}/${progress.total} done · ${progress.open} open` : 'No tasks yet'} · edited ${escapeHtml(timeAgo(project.updated_at))}</small>
+    </a>`;
+  };
+
+  const activity = (notificationsResult.data || []).filter((item) => !item.workspace_id || item.workspace_id === workspaceId).slice(0, 6);
+
+  // Due-soon alert and weekly digest.
+  const localKey = (offsetDays) => {
+    const date = new Date(Date.now() + offsetDays * 86400000);
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  };
+  const todayStr = localKey(0);
+  const tomorrow = localKey(1);
+  const weekEnd = localKey(7);
+  const weekAgo = Date.now() - 7 * 86400000;
+  const dueSoonMine = myTasks.filter((task) => task.due_date && task.due_date <= tomorrow && task.due_date >= todayStr);
+  const openTeamTasks = tasks.filter((task) => task.status !== 'done' && !task.completed);
+  const digest = {
+    dueThisWeek: openTeamTasks.filter((task) => task.due_date && task.due_date >= todayStr && task.due_date <= weekEnd).length,
+    overdue: openTeamTasks.filter((task) => isOverdue(task)).length,
+    unowned: unassigned.length,
+    pagesEdited: pages.filter((page) => Date.parse(page.updated_at) > weekAgo).length
+  };
+
+  const templatesHtml = Object.entries(PROJECT_TEMPLATES).map(([key, template]) => `
+    <button type="button" class="home-template" data-template="${key}">
+      <span class="home-template-icon">${template.icon}</span>
+      <strong>${escapeHtml(template.label)}</strong>
+      <p>${escapeHtml(template.description)}</p>
+    </button>`).join('');
 
   container.innerHTML = `
-    <div class="p-8 max-w-7xl mx-auto w-full">
-      <section class="mb-12">
-        <h2 class="text-3xl font-extrabold tracking-tighter text-[#2d3433] dark:text-stone-100 mb-2 font-headline">Welcome back, ${safeUserName}.</h2>
-        <p class="text-on-surface-variant body-lg">Your workspace is harmonized and ready for your next move.</p>
-      </section>
-
-      <div class="grid grid-cols-1 md:grid-cols-12 gap-6">
-
-        <div class="md:col-span-4 bg-surface-container-lowest rounded-xl p-6 shadow-sm flex flex-col">
-          <div class="flex items-center gap-2 mb-6">
-            <span class="material-symbols-outlined text-primary">task_alt</span>
-            <h3 class="font-bold tracking-tight text-on-surface">Getting Started</h3>
-          </div>
-          <ul class="space-y-4" id="checklist">
-            <li class="flex items-start gap-3 group ${hasPages ? 'cursor-default' : 'cursor-pointer'}" ${!hasPages ? 'id="checklist-create-page"' : ''}>
-              <div class="w-5 h-5 rounded ${hasPages ? 'bg-primary' : 'border-2 border-primary/20 group-hover:border-primary'} flex items-center justify-center mt-0.5">
-                ${hasPages ? '<span class="material-symbols-outlined text-white text-[12px] font-bold">check</span>' : ''}
-              </div>
-              <div>
-                <p class="text-sm font-medium ${hasPages ? 'text-on-surface-variant line-through' : 'text-on-surface'}">Create your first page</p>
-                <p class="text-xs text-on-surface-variant">${hasPages ? 'Great! You have pages.' : 'Organize ideas into meaningful documents.'}</p>
-              </div>
-            </li>
-            <li class="flex items-start gap-3 group cursor-default">
-              <div class="w-5 h-5 rounded ${hasWorkspace ? 'bg-primary' : 'border-2 border-primary/20'} flex items-center justify-center mt-0.5">
-                ${hasWorkspace ? '<span class="material-symbols-outlined text-white text-[12px] font-bold">check</span>' : ''}
-              </div>
-              <div>
-                <p class="text-sm font-medium ${hasWorkspace ? 'text-on-surface-variant line-through' : 'text-on-surface'}">Setup workspace identity</p>
-                <p class="text-xs text-on-surface-variant">${hasWorkspace ? 'Workspace created automatically.' : 'Create your workspace.'}</p>
-              </div>
-            </li>
-            <li class="flex items-start gap-3 group ${hasTasks ? 'cursor-default' : 'cursor-pointer'}" ${!hasTasks ? 'id="checklist-create-task"' : ''}>
-              <div class="w-5 h-5 rounded ${hasTasks ? 'bg-primary' : 'border-2 border-primary/20 group-hover:border-primary'} flex items-center justify-center mt-0.5">
-                ${hasTasks ? '<span class="material-symbols-outlined text-white text-[12px] font-bold">check</span>' : ''}
-              </div>
-              <div>
-                <p class="text-sm font-medium ${hasTasks ? 'text-on-surface-variant line-through' : 'text-on-surface'}">Add your first task</p>
-                <p class="text-xs text-on-surface-variant">${hasTasks ? 'You\'re on track!' : 'Start tracking your workflow.'}</p>
-              </div>
-            </li>
-          </ul>
-          <div class="mt-auto pt-8">
-            <div class="w-full bg-surface-container rounded-full h-1.5 mb-2">
-              <div class="bg-primary h-1.5 rounded-full transition-all duration-500" style="width: ${progressPct}%"></div>
-            </div>
-            <p class="text-[10px] uppercase tracking-widest font-bold text-on-surface-variant">${progressPct}% PROGRESS</p>
-          </div>
+    <div class="home">
+      <header class="home-header">
+        <div>
+          <p class="home-eyebrow">${teamName}</p>
+          <h1>Hi ${firstName} 👋</h1>
+          <p class="home-summary">${overdueMine.length ? `<strong class="is-overdue">${overdueMine.length} of your tasks ${overdueMine.length === 1 ? 'is' : 'are'} overdue.</strong> ` : ''}${myTasks.length ? `You have ${myTasks.length} open task${myTasks.length === 1 ? '' : 's'}${projects.length ? ` across ${projects.length} project${projects.length === 1 ? '' : 's'}` : ''}.` : projects.length ? 'Nothing assigned to you right now.' : 'Motion helps your team plan projects, split them into tasks, and finish them together.'}</p>
         </div>
-
-        <div class="md:col-span-8">
-          <div class="flex justify-between items-end mb-4">
-            <h3 class="font-bold tracking-tight text-on-surface px-2">Recent Pages</h3>
-            <button class="text-xs font-bold text-primary hover:underline" onclick="window.location.hash='notes'">View all</button>
-          </div>
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-4" id="recent-pages-grid">
-            ${
-              pages.length === 0
-                ? `
-              <div class="col-span-2 empty-state">
-                <span class="material-symbols-outlined">description</span>
-                <h3>No pages yet</h3>
-                <p>Create your first page to get started.</p>
-                <button class="mt-4 px-5 py-2 bg-primary text-on-primary rounded-lg font-semibold text-sm hover:opacity-90 transition-opacity" id="dashboard-create-page-btn">
-                  <span class="material-symbols-outlined text-sm" style="vertical-align: -3px;">add</span>
-                  Create Page
-                </button>
-              </div>
-            `
-                : pages
-                    .map(
-                      (page) => `
-              <div class="group bg-surface-container-lowest rounded-xl overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer" onclick="window.location.hash='editor/${page.id}'">
-                <div class="h-32 bg-surface-container overflow-hidden flex items-center justify-center">
-                  <span class="text-4xl">${escapeHtml(page.icon || '📄')}</span>
-                </div>
-                <div class="p-4">
-                  <div class="flex items-center justify-between mb-2">
-                    <span class="text-[10px] font-bold text-tertiary uppercase tracking-wider">${escapeHtml(page.page_type || 'Note')}</span>
-                    <span class="material-symbols-outlined text-sm text-on-surface-variant opacity-0 group-hover:opacity-100 transition-opacity">more_horiz</span>
-                  </div>
-                  <h4 class="font-semibold text-on-surface mb-1">${escapeHtml(page.title || 'Untitled')}</h4>
-                  <p class="text-xs text-on-surface-variant">${timeAgo(page.updated_at)}</p>
-                </div>
-              </div>
-            `
-                    )
-                    .join('')
-            }
-          </div>
+        <div class="home-actions">
+          <button type="button" class="project-btn primary" data-new-project><span class="material-symbols-outlined">create_new_folder</span> New project</button>
+          <button type="button" class="project-btn" data-new-task><span class="material-symbols-outlined">add_task</span> Add task</button>
         </div>
+      </header>
 
-        <div class="md:col-span-12 bg-surface-container-low/50 rounded-xl p-8 border border-outline-variant/10">
-          <div class="flex flex-col md:flex-row md:items-center justify-between gap-6">
-            <div>
-              <h3 class="text-xl font-bold tracking-tight text-on-surface mb-1">Active Tasks</h3>
-              <p class="text-sm text-on-surface-variant">
-                ${
-                  pending > 0
-                    ? `You have ${pending} task${pending > 1 ? 's' : ''} requiring attention.`
-                    : 'All caught up! No pending tasks.'
-                }
-              </p>
-            </div>
-            <div class="flex flex-wrap items-center justify-end gap-4">
-              <button id="dashboard-add-task" class="px-4 py-2.5 bg-primary text-on-primary rounded-lg text-sm font-semibold flex items-center gap-2 hover:bg-primary-dim transition-colors" type="button">
-                <span class="material-symbols-outlined text-base">add_task</span>
-                Add task
-              </button>
-              <div class="flex flex-col items-center justify-center p-4 bg-surface-container-lowest rounded-lg w-24">
-                <span class="text-2xl font-bold text-on-surface">${String(counts.total).padStart(2, '0')}</span>
-                <span class="text-[10px] font-bold text-on-surface-variant uppercase">Total</span>
-              </div>
-              <div class="flex flex-col items-center justify-center p-4 bg-primary text-on-primary rounded-lg w-24 shadow-lg shadow-primary/20">
-                <span class="text-2xl font-bold">${String(pending).padStart(2, '0')}</span>
-                <span class="text-[10px] font-bold uppercase">Pending</span>
-              </div>
-              <div class="flex flex-col items-center justify-center p-4 bg-surface-container-lowest rounded-lg w-24">
-                <span class="text-2xl font-bold text-tertiary">${String(counts.done).padStart(2, '0')}</span>
-                <span class="text-[10px] font-bold text-on-surface-variant uppercase">Done</span>
-              </div>
-              <div class="flex flex-col items-center justify-center p-4 bg-error-container/40 rounded-lg w-24">
-                <span class="text-2xl font-bold text-error">${String(counts.overdue || 0).padStart(2, '0')}</span>
-                <span class="text-[10px] font-bold text-error uppercase">Overdue</span>
-              </div>
-            </div>
-          </div>
+      ${dueSoonMine.length ? `<a class="home-due-alert" href="#kanban?assignee=mine"><span class="material-symbols-outlined">alarm</span><span><strong>${dueSoonMine.length === 1 ? 'One of your tasks is' : `${dueSoonMine.length} of your tasks are`} due ${dueSoonMine.every((task) => task.due_date === todayStr) ? 'today' : 'by tomorrow'}:</strong> ${dueSoonMine.slice(0, 3).map((task) => escapeHtml(task.title)).join(', ')}${dueSoonMine.length > 3 ? '…' : ''}</span></a>` : ''}
 
-          <div class="mt-8 space-y-3" id="task-list">
-            ${
-              tasks.length === 0
-                ? `
-              <div class="text-center py-6 text-on-surface-variant text-sm">
-                No tasks yet.
-                <button class="text-primary font-semibold hover:underline ml-1" onclick="window.location.hash='kanban'">Head to the Kanban board</button>
-                to create some!
-              </div>
-            `
-                : tasks
-                    .slice(0, 4)
-                    .map(
-                      (task) => `
-              <div class="flex items-center justify-between p-3 bg-white/40 dark:bg-stone-800/40 hover:bg-white dark:hover:bg-stone-800 rounded-lg transition-colors cursor-pointer group" data-task-id="${task.id}" data-dash-task>
-                <div class="flex items-center gap-4">
-                  <button type="button" class="dashboard-task-toggle w-6 h-6 rounded-full flex items-center justify-center border ${task.completed ? 'bg-primary border-primary text-on-primary' : 'border-outline-variant text-transparent hover:text-primary'}" data-task-id="${task.id}" data-completed="${task.completed}" aria-label="${escapeHtml(`${task.completed ? 'Reopen' : 'Complete'} ${task.title || 'task'}`)}">
-                    <span class="material-symbols-outlined text-sm">check</span>
-                  </button>
-                  <button type="button" class="text-left text-sm font-medium text-on-surface hover:underline ${task.completed ? 'line-through opacity-50' : ''}" aria-label="Open task ${escapeHtml(task.title || 'Untitled task')}">${escapeHtml(task.title || 'Untitled task')}</button>
-                </div>
-                <div class="flex items-center gap-4">
-                  <span class="text-xs font-bold text-on-surface-variant">${
-                    task.due_date
-                      ? new Date(task.due_date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-                      : task.status?.toUpperCase().replace('_', ' ')
-                  }</span>
-                  <span class="material-symbols-outlined text-on-surface-variant group-hover:text-primary transition-colors">chevron_right</span>
-                </div>
-              </div>
-            `
-                    )
-                    .join('')
-            }
-          </div>
+      ${projects.length ? `<section class="home-digest" aria-label="This week">
+        <h2>This week in ${teamName}</h2>
+        <div class="home-digest-grid">
+          <a href="#kanban"><strong>${digest.dueThisWeek}</strong><span>task${digest.dueThisWeek === 1 ? '' : 's'} due in the next 7 days</span></a>
+          <a href="#kanban" class="${digest.overdue ? 'is-bad' : ''}"><strong>${digest.overdue}</strong><span>overdue</span></a>
+          <a href="#kanban" class="${digest.unowned ? 'is-warn' : ''}"><strong>${digest.unowned}</strong><span>without an owner</span></a>
+          <a href="#notes"><strong>${digest.pagesEdited}</strong><span>page${digest.pagesEdited === 1 ? '' : 's'} edited</span></a>
+        </div>
+      </section>` : ''}
+
+      ${projects.length ? '' : `<section class="home-start">
+        <h2>Start your first project</h2>
+        <p>Pick a starting point. You’ll get a plan page and starter tasks you can assign to teammates.</p>
+        <div class="home-templates">${templatesHtml}</div>
+      </section>`}
+
+      ${showChecklist ? `<section class="home-checklist" aria-label="Getting started">
+        <div class="home-checklist-head"><div><h2>Get your team going</h2><p>${stepsDone} of ${steps.length} done</p></div><button type="button" class="home-dismiss" data-dismiss aria-label="Hide getting started">Hide</button></div>
+        <div class="project-progress-track"><span style="width:${Math.round((stepsDone / steps.length) * 100)}%"></span></div>
+        <ol>${steps.map((step) => `<li class="${step.done ? 'is-done' : ''}">
+          <span class="material-symbols-outlined">${step.done ? 'check_circle' : 'radio_button_unchecked'}</span>
+          <div><strong>${step.label}</strong><small>${step.hint}</small></div>
+          ${step.done ? '' : step.action ? `<button type="button" class="project-link" data-step-action="${step.action}">Do it →</button>` : step.href ? `<a class="project-link" href="${step.href}">Do it →</a>` : ''}
+        </li>`).join('')}</ol>
+      </section>` : ''}
+
+      <div class="home-grid">
+        <section class="project-section">
+          <div class="project-section-head"><h2>My tasks</h2><a class="project-link" href="#kanban?assignee=mine">See all →</a></div>
+          ${myTasks.length ? `<ul class="project-task-list">${myTasks.slice(0, 8).map(taskRow).join('')}</ul>` : `<div class="project-hint"><span class="material-symbols-outlined">task_alt</span><div><strong>Nothing assigned to you</strong><p>${unassigned.length ? `${unassigned.length} task${unassigned.length === 1 ? ' has' : 's have'} no owner yet — <a href="#kanban">pick one up</a>.` : 'Tasks assigned to you from any project appear here.'}</p></div></div>`}
+        </section>
+
+        <div class="project-side">
+          ${projects.length ? `<section class="project-section">
+            <div class="project-section-head"><h2>Projects</h2><button type="button" class="project-btn" data-new-project><span class="material-symbols-outlined">add</span> New</button></div>
+            <div class="home-projects">${projects.slice(0, 6).map(projectCard).join('')}</div>
+          </section>` : ''}
+          <section class="project-section">
+            <div class="project-section-head"><h2>Team activity</h2></div>
+            ${activity.length ? `<ul class="project-feed">${activity.map((item) => {
+              const info = describeNotification(item);
+              return `<li><a href="${info.href ? `#${escapeHtml(info.href)}` : '#dashboard'}" data-notification="${escapeHtml(item.id)}"><strong>${escapeHtml(info.text)}</strong>${info.excerpt ? `<p>${escapeHtml(info.excerpt)}</p>` : ''}<small>${escapeHtml(timeAgo(item.created_at))}</small></a></li>`;
+            }).join('')}</ul>` : `<div class="project-hint"><span class="material-symbols-outlined">groups</span><div><strong>Quiet for now</strong><p>${members.length > 1 ? 'When teammates comment, mention you or assign you work, it shows up here.' : '<a href="#settings?section=team">Invite a teammate</a> to see their updates here.'}</p></div></div>`}
+          </section>
         </div>
       </div>
-    </div>
-  `;
+    </div>`;
 
-  // Bind: checklist item → navigate to create page
-  container.querySelector('#checklist-create-page')?.addEventListener('click', async () => {
-    document.getElementById('btn-new-page')?.click();
+  const refresh = () => renderDashboard(container);
+  container.querySelectorAll('[data-new-project]').forEach((button) => button.addEventListener('click', () => startNewProject()));
+  container.querySelectorAll('[data-template]').forEach((button) => button.addEventListener('click', () => startNewProject({ template: button.dataset.template })));
+  container.querySelectorAll('[data-step-action="new-project"]').forEach((button) => button.addEventListener('click', () => startNewProject()));
+  container.querySelector('[data-dismiss]')?.addEventListener('click', () => {
+    try { localStorage.setItem(checklistKey(), '1'); } catch { /* private mode */ }
+    container.querySelector('.home-checklist')?.remove();
   });
-
-  // Bind: checklist item → navigate to kanban
-  container.querySelector('#checklist-create-task')?.addEventListener('click', async () => {
-    window.location.hash = 'kanban';
+  container.querySelector('[data-new-task]')?.addEventListener('click', async () => {
+    const draft = await requestNewTask({ members, projects, projectId: projects[0]?.id || '' });
+    if (!draft) return;
+    const { title, ...options } = draft;
+    const { error } = await createTask(title, { ...options, workspaceId, sortOrder: Date.now() });
+    if (error) return showToast(`Could not create task: ${error.message}`, 'error');
+    showToast(`Task “${title}” added`, 'success');
+    refresh();
   });
-
-  // Bind: empty state create page button
-  container.querySelector('#dashboard-create-page-btn')?.addEventListener('click', async () => {
-    document.getElementById('btn-new-page')?.click();
-  });
-
-  container.querySelector('#dashboard-add-task')?.addEventListener('click', async () => {
-    const title = await requestInput('Task title:');
-    if (!title?.trim()) return;
-    const priorityInput = await requestInput('Priority: low, medium, high, or urgent', 'medium');
-    if (priorityInput === null) return;
-    const priority = ['low', 'medium', 'high', 'urgent'].includes(priorityInput.trim().toLowerCase())
-      ? priorityInput.trim().toLowerCase()
-      : 'medium';
-    const dueDateInput = await requestInput('Due date (YYYY-MM-DD, optional):', '');
-    if (dueDateInput === null) return;
-    const dueDate = dueDateInput.trim();
-    if (dueDate && !/^\d{4}-\d{2}-\d{2}$/.test(dueDate)) {
-      showToast('Use the date format YYYY-MM-DD', 'error');
-      return;
-    }
-    const { data: task, error: taskError } = await createTask(title.trim(), { workspaceId: AppState.workspace?.id, priority, dueDate });
-    if (taskError) {
-      showToast(`Could not create task: ${taskError.message}`, 'error');
-      return;
-    }
-    showToast('Task added', 'success');
-    window.location.hash = `kanban?task=${encodeURIComponent(task.id)}`;
-  });
-
-  // Bind: task click → navigate to kanban
-  container.querySelectorAll('[data-dash-task]').forEach((el) => {
-    el.addEventListener('click', async () => {
-      window.location.hash = `kanban?task=${encodeURIComponent(el.dataset.taskId || '')}`;
-    });
-  });
-
-  container.querySelectorAll('.dashboard-task-toggle').forEach((button) => {
-    button.addEventListener('click', async (event) => {
-      event.stopPropagation();
-      const { error: toggleError } = await toggleTask(button.dataset.taskId, button.dataset.completed !== 'true');
-      if (toggleError) {
-        showToast(`Could not update task: ${toggleError.message}`, 'error');
-        return;
-      }
-      renderDashboard(container);
-    });
-  });
+  container.querySelectorAll('[data-toggle]').forEach((button) => button.addEventListener('click', async () => {
+    const { error } = await toggleTask(button.dataset.toggle, true);
+    if (error) return showToast(`Could not update task: ${error.message}`, 'error');
+    showToast('Task done ✓', 'success');
+    refresh();
+  }));
+  container.querySelectorAll('[data-open]').forEach((button) => button.addEventListener('click', () => {
+    const task = tasks.find((item) => item.id === button.dataset.open);
+    if (task) openTaskDetails(task, members, refresh);
+  }));
 }
