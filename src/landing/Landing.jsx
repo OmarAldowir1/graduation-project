@@ -152,13 +152,18 @@ function buildVals({ view, aiStep, approved }) {
   };
 }
 
+// The homepage always plays its scroll story (product decision for presentations).
+// Set to true to show a calm static hero to visitors who turned on "Reduce motion".
+const RESPECT_REDUCED_MOTION = false;
+
 // ---------------------------------------------------------------- behaviour (Component class)
 function startLanding(root, { signedIn }) {
   const q = (s) => root.querySelector(s);
   const qa = (s) => Array.from(root.querySelectorAll(s));
-  const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const reduced = RESPECT_REDUCED_MOTION && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const state = { view: 'Board', aiStep: 0, approved: false };
   let raf = 0, cur = 0, target = 0, wide = false, cx = 0, R = 240, s = 20, pos = [], els = null;
+  let startY = -183.6, startScale = 40; // opening position/size of the large "g"
   const timers = [];
 
   const renderViews = (animate) => {
@@ -184,7 +189,32 @@ function startLanding(root, { signedIn }) {
     if (box) Object.assign(box.style, wide
       ? { left: 'clamp(24px,6vw,96px)', right: 'auto', top: '50%', bottom: 'auto', transform: 'translateY(-50%)', width: 'min(360px,30vw)', textAlign: 'left' }
       : { left: '24px', right: '24px', top: 'auto', bottom: '40px', transform: 'none', width: 'auto', textAlign: 'center' });
-    const hint = q('[data-hint]'); if (hint) hint.style.display = H < 760 || reduced ? 'none' : 'flex';
+    // Fit the opening headline to the window height: by default it sits at 57%
+    // (as designed), but on short windows it moves up (never above the big "g")
+    // so the buttons are never cut off.
+    const unit = Math.min(W, H) / 1000; // SVG viewBox units → px
+    // Short windows: the opening "g" shrinks a little and sits just under the menu bar.
+    const k = Math.max(0.6, Math.min(1, H / 800));
+    if (k < 1) {
+      startScale = 40 * k;
+      const navBottomUnits = (88 - H / 2) / unit;
+      startY = Math.max(navBottomUnits + 2 * startScale, -183.6 - 200);
+    } else {
+      startScale = 40; startY = -183.6;
+    }
+    const head = q('[data-headline]');
+    let headBottom = H;
+    if (head) {
+      head.style.top = '57%';
+      const hh = head.offsetHeight;
+      const gBottom = H / 2 + (startY + 4.2 * startScale) * unit; // bottom of the large "g"
+      let top = 0.57 * H;
+      if (top + hh > H - 24) top = Math.max(gBottom + 12, H - 24 - hh);
+      head.style.top = `${Math.round(top)}px`;
+      headBottom = top + hh;
+    }
+    // The "scroll" hint only shows when it has room below the buttons.
+    const hint = q('[data-hint]'); if (hint) hint.style.display = H < 760 || reduced || headBottom > H - 76 ? 'none' : 'flex';
     const prog = q('[data-progress]'); if (prog) prog.style.display = wide && !reduced ? 'flex' : 'none';
     pos = [0, 1, 2, 3, 4].map((i) => {
       const a = ((-90 + 72 * i) * Math.PI) / 180;
@@ -211,9 +241,9 @@ function startLanding(root, { signedIn }) {
     const E = els; if (!E || !E.main) return;
     const OFF = 1.09;
     const t0 = segIO(p, 0.05, 0.27);
-    const startO = { x: 0, y: -140 - OFF * 40 };
+    const startO = { x: 0, y: startY };
     const o0 = { x: pos[0].x, y: pos[0].y - OFF * s };
-    const m0 = { x: L(startO.x, o0.x, t0), y: L(startO.y, o0.y, t0), sc: L(40, s, t0) };
+    const m0 = { x: L(startO.x, o0.x, t0), y: L(startO.y, o0.y, t0), sc: L(startScale, s, t0) };
     E.mem.forEach((el) => {
       const i = +el.getAttribute('data-mem');
       if (i === 0) { el.setAttribute('transform', `translate(${m0.x} ${m0.y}) scale(${m0.sc})`); return; }

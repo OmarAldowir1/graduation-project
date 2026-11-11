@@ -24,7 +24,7 @@ Everything is organised around **projects**. Each project has:
 ### Brand & homepage
 
 - **Brand:** Groupify colors (navy `#022635`, deep `#00141B`, blue `#2E7CA9`, silver `#C0C9CD`, paper `#F5F7F8`), Geist / Inter / Geist Mono / IBM Plex Sans Arabic, and the "g" logo (a person; the dot is a task). Tokens and app styling live in `src/groupify.css`; the logo is `src/components/GroupifyLogo.jsx`.
-- **Homepage (`#welcome`):** signed-out visitors see the scroll-driven story homepage from the design handoff (`src/landing/`). "Sign in" and "Get started" open the login screen (Get started opens Sign up). With reduced motion turned on, the hero shows a static opening frame.
+- **Homepage (`#welcome`):** signed-out visitors see the scroll-driven story homepage from the design handoff (`src/landing/`). "Sign in" and "Get started" open the login screen (Get started opens Sign up). The scroll animation always plays; to show a static hero to visitors who turned on "Reduce motion", set `RESPECT_REDUCED_MOTION = true` in `src/landing/Landing.jsx`. The hero layout adapts to short and tall windows.
 
 ### How it's organised
 

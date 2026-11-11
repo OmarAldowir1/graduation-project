@@ -16,3 +16,7 @@ html.landing-active body { overflow: visible !important; height: auto !important
 @media (max-width: 380px) {
   .landing nav a[data-app-link="login"] { padding: 9px 6px !important; }
 }
+
+/* Opening headline also scales with window height, so it fits shorter laptop screens. */
+.landing [data-headline] h1 { font-size: clamp(36px, min(6.4vw, 10.5vh), 92px) !important; }
+.landing [data-headline] { gap: clamp(12px, 2.4vh, 20px) !important; }
