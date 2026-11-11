@@ -772,7 +772,7 @@ export async function renderEditor(container, route) {
     const url = `${window.location.origin}${window.location.pathname}#editor/${page.id}`;
     if (navigator.share) {
       try {
-        await navigator.share({ title: page.title || 'Motion page', text: 'View this Motion page', url });
+        await navigator.share({ title: page.title || 'Groupify page', text: 'View this Groupify page', url });
         return;
       } catch (error) {
         if (error?.name === 'AbortError') return;

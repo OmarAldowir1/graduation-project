@@ -13,7 +13,7 @@ export default function SharedPage({ token }) {
       .then(({ data, error }) => {
         if (cancelled) return;
         setState({ loading: false, page: data || null, error: error ? 'This link could not be opened right now.' : '' });
-        if (data?.title) document.title = `${data.title} — shared from Motion`;
+        if (data?.title) document.title = `${data.title} — shared from Groupify`;
       });
     return () => { cancelled = true; };
   }, [token]);
@@ -27,7 +27,7 @@ export default function SharedPage({ token }) {
         <span className="material-symbols-outlined shared-icon">link_off</span>
         <h1>This page isn’t available</h1>
         <p>{state.error || 'The link may have been turned off, or the page was archived.'}</p>
-        <a href="#login">Go to Motion</a>
+        <a href="#login">Go to Groupify</a>
       </div>
     );
   }
@@ -36,8 +36,8 @@ export default function SharedPage({ token }) {
   return (
     <div className="shared-page">
       <header className="shared-bar">
-        <span>Shared from <strong>{page.team || 'a Motion team'}</strong> · read-only</span>
-        <a href="#login">Open Motion</a>
+        <span>Shared from <strong>{page.team || 'a Groupify team'}</strong> · read-only</span>
+        <a href="#login">Open Groupify</a>
       </header>
       <article className="shared-article">
         {cover ? <img className="shared-cover" src={cover} alt="" /> : null}

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import GroupifyLogo from './GroupifyLogo.jsx';
 import { isSupabaseConfigured, SUPABASE_URL } from '../lib/config.js';
 import { getSession, sendPasswordReset, signIn, signInWithGoogle, signUp, updatePassword } from '../lib/supabase.js';
 import { showToast } from '../legacy/app.js';
@@ -16,7 +17,7 @@ function friendlyNetworkHelp() {
 
 function logNetworkHelpForDevelopers(err) {
   if (!import.meta.env.DEV) return;
-  console.groupCollapsed('[Motion] Supabase network error');
+  console.groupCollapsed('[Groupify] Supabase network error');
   console.error(err);
   console.info('SUPABASE_URL:', SUPABASE_URL);
   console.info(
@@ -27,7 +28,8 @@ function logNetworkHelpForDevelopers(err) {
 }
 
 export default function Login({ isBootstrapping }) {
-  const [mode, setMode] = useState('signin');
+  // #login?mode=signup (from the homepage's "Get started") opens the Sign Up tab.
+  const [mode, setMode] = useState(() => (/[?&]mode=signup\b/.test(window.location.hash) ? 'signup' : 'signin'));
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
@@ -106,16 +108,13 @@ export default function Login({ isBootstrapping }) {
   }
 
   return (
-    <div className="bg-surface text-on-surface min-h-screen flex flex-col items-center justify-center p-6">
-      <main className="w-full max-w-[420px] space-y-10">
-        <header className="text-center space-y-2">
-          <div className="flex justify-center mb-6">
-            <div className="w-12 h-12 rounded-xl bg-primary flex items-center justify-center shadow-sm">
-              <span className="material-symbols-outlined text-on-primary text-2xl">motion_photos_on</span>
-            </div>
-          </div>
-          <h1 className="text-3xl font-extrabold tracking-tighter text-on-surface">Motion</h1>
-          <p className="text-on-surface-variant font-label text-sm max-w-xs mx-auto leading-relaxed">Plan projects, share the work, and finish together — notes, tasks and discussion for your team in one place.</p>
+    <div className="auth-page min-h-screen flex flex-col items-center justify-center p-6">
+      <a href="#welcome" className="auth-back"><span className="material-symbols-outlined" aria-hidden="true">arrow_back</span>Groupify home</a>
+      <main className="w-full max-w-[420px] space-y-8">
+        <header className="text-center space-y-4">
+          <div className="flex justify-center"><GroupifyLogo height={34} color="#F5F7F8" /></div>
+          <p className="auth-eyebrow">for student teams &amp; small groups</p>
+          <h1 className="auth-title">{mode === 'signup' ? 'Start your first group project.' : 'Plan it together. Finish it together.'}</h1>
           {!isSupabaseConfigured ? (
             <p className="mt-4 rounded-lg bg-tertiary-container/40 px-3 py-2 text-left text-xs text-on-tertiary-container">
               Backend setup required: copy <code>.env.example</code> to <code>.env</code> and add your Supabase credentials.
@@ -123,7 +122,7 @@ export default function Login({ isBootstrapping }) {
           ) : null}
         </header>
 
-        <div className="tonal-stack-card rounded-xl p-8 shadow-[0_40px_40px_-15px_rgba(45,52,51,0.04)] border border-outline-variant/10 bg-white">
+        <div className="auth-card rounded-2xl p-8 bg-white">
           <div className="flex mb-6 bg-surface-container rounded-lg p-1">
             <button
               type="button"
@@ -290,11 +289,12 @@ export function PasswordReset() {
   }
 
   return (
-    <div className="bg-surface text-on-surface min-h-screen flex flex-col items-center justify-center p-6">
-      <main className="w-full max-w-[420px]">
-        <div className="tonal-stack-card rounded-xl p-8 border border-outline-variant/10 bg-white">
+    <div className="auth-page min-h-screen flex flex-col items-center justify-center p-6">
+      <main className="w-full max-w-[420px] space-y-8">
+        <div className="flex justify-center"><GroupifyLogo height={30} color="#F5F7F8" /></div>
+        <div className="auth-card rounded-2xl p-8 bg-white">
           <h1 className="text-2xl font-extrabold tracking-tight mb-2">Set a new password</h1>
-          <p className="text-sm text-on-surface-variant mb-6">Choose a new password for your Motion account.</p>
+          <p className="text-sm text-on-surface-variant mb-6">Choose a new password for your Groupify account.</p>
           {error ? <div className="mb-4 p-3 rounded-lg bg-error-container/20 text-on-error-container text-sm">{error}</div> : null}
           {message ? <div className="mb-4 p-3 rounded-lg bg-primary-container/30 text-on-primary-container text-sm">{message}</div> : null}
           <form className="space-y-4" onSubmit={handleSubmit}>

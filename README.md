@@ -1,6 +1,6 @@
-# Motion Workspace
+# Groupify Workspace
 
-**Motion helps small teams plan a project, split it into tasks, and finish it together.**
+**Groupify helps small teams plan a project, split it into tasks, and finish it together.**
 
 Everything is organised around **projects**. Each project has:
 
@@ -20,6 +20,11 @@ Everything is organised around **projects**. Each project has:
 - **Page toolbar**: Share (team link, or a read-only public link anyone can open), History (restore earlier versions), Ask AI (summarize, turn into tasks, write a status update), and a ⋯ menu with favorite, duplicate, move, save as team template, export/import Markdown, archive, delete.
 - **Comments**: threads you can resolve, filter (open/resolved) and step through, with @mentions.
 - **Reminders**: a daily in-app reminder for tasks due today or tomorrow, plus a "This week" summary on Home. (Email digests would need an email service and aren't included.)
+
+### Brand & homepage
+
+- **Brand:** Groupify colors (navy `#022635`, deep `#00141B`, blue `#2E7CA9`, silver `#C0C9CD`, paper `#F5F7F8`), Geist / Inter / Geist Mono / IBM Plex Sans Arabic, and the "g" logo (a person; the dot is a task). Tokens and app styling live in `src/groupify.css`; the logo is `src/components/GroupifyLogo.jsx`.
+- **Homepage (`#welcome`):** signed-out visitors see the scroll-driven story homepage from the design handoff (`src/landing/`). "Sign in" and "Get started" open the login screen (Get started opens Sign up). With reduced motion turned on, the hero shows a static opening frame.
 
 ### How it's organised
 

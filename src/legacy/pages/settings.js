@@ -352,7 +352,7 @@ export async function renderSettings(container, route) {
     try {
       const backup = JSON.parse(await file.text());
       if (backup?.format !== 'motion-workspace-backup' || !Array.isArray(backup.pages) || !Array.isArray(backup.tasks)) {
-        throw new Error('This is not a valid Motion backup file.');
+        throw new Error('This is not a valid Groupify backup file.');
       }
       if (!await requestConfirmation(`Import ${backup.pages.length} pages and ${backup.tasks.length} tasks? Existing records will remain unchanged.`)) return;
       const pageMap = new Map();

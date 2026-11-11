@@ -1,4 +1,4 @@
-// Storage and management for Motion AI chat sessions
+// Storage and management for Groupify AI chat sessions
 const STORAGE_KEY = 'motion_ai_chats_v1';
 
 // No fake sample conversations: a new user starts with an empty, helpful screen.

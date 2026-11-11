@@ -32,11 +32,14 @@ import AIChatView from './components/AIChatView.jsx';
 import AIPageSidebar from './components/AIPageSidebar.jsx';
 import NotionAIFace from './components/NotionAIFace.jsx';
 import PresenceStack from './components/PresenceStack.jsx';
+import GroupifyLogo from './components/GroupifyLogo.jsx';
 import SharedPage from './components/SharedPage.jsx';
+import Landing from './landing/Landing.jsx';
 import Modal, { PromptDialog } from './components/Modal.jsx';
 import { getStoredChats, createNewAIChat, deleteAIChat, formatChatDate } from './lib/aiChatStore.js';
 import './App.css';
 import './ui-refresh.css';
+import './groupify.css';
 
 import { renderDashboard } from './legacy/pages/dashboard.js';
 import { renderNotes } from './legacy/pages/notes.js';
@@ -548,6 +551,14 @@ export default function App() {
   const [breadcrumb, setBreadcrumb] = useState(() => (parseHash().path === 'ai-chat' ? 'AI Chat' : 'Dashboard'));
   const [toast, setToast] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // On wide screens the sidebar is always shown (Groupify layout); below that it slides in.
+  const [isDesktop, setIsDesktop] = useState(() => window.matchMedia('(min-width: 1024px)').matches);
+  useEffect(() => {
+    const query = window.matchMedia('(min-width: 1024px)');
+    const onChange = (event) => setIsDesktop(event.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
   useEffect(() => {
     if (!sidebarOpen) return;
     const closeOnEscape = (event) => {
@@ -634,7 +645,7 @@ export default function App() {
     return map[route.path] || renderDashboard;
   }, [route.path]);
 
-  const showShell = !['login', 'reset-password', 'share'].includes(route.path);
+  const showShell = !['login', 'reset-password', 'share', 'welcome'].includes(route.path);
 
   // Apply theme on mount and changes
   useEffect(() => {
@@ -899,7 +910,13 @@ export default function App() {
           AppState.workspaces = [];
           AppState.workspace = null;
           AppState.isLoading = false;
-          if (!['login', 'reset-password', 'share'].includes(parseHash().path)) window.location.hash = 'login';
+          {
+            // Signed-out visitors to the main address see the homepage; deep links go to sign-in.
+            const signedOutPath = parseHash().path;
+            if (!['login', 'reset-password', 'share', 'welcome'].includes(signedOutPath)) {
+              window.location.hash = ['dashboard', ''].includes(signedOutPath) && !window.location.hash.replace('#', '').startsWith('dashboard/') ? 'welcome' : 'login';
+            }
+          }
           return;
         }
         const session = await getSession();
@@ -913,7 +930,13 @@ export default function App() {
           AppState.workspaces = [];
           AppState.workspace = null;
           AppState.isLoading = false;
-          if (!['login', 'reset-password', 'share'].includes(parseHash().path)) window.location.hash = 'login';
+          {
+            // Signed-out visitors to the main address see the homepage; deep links go to sign-in.
+            const signedOutPath = parseHash().path;
+            if (!['login', 'reset-password', 'share', 'welcome'].includes(signedOutPath)) {
+              window.location.hash = ['dashboard', ''].includes(signedOutPath) && !window.location.hash.replace('#', '').startsWith('dashboard/') ? 'welcome' : 'login';
+            }
+          }
           return;
         }
 
@@ -1061,6 +1084,7 @@ export default function App() {
 
   if (!showShell) {
     if (route.path === 'share') return <SharedPage token={route.segments[0]} />;
+    if (route.path === 'welcome') return <Landing signedIn={Boolean(AppState.user)} />;
     if (route.path === 'reset-password') return <PasswordReset />;
     return <Login isBootstrapping={isBootstrapping} />;
   }
@@ -1095,7 +1119,7 @@ export default function App() {
       {/* Sidebar */}
       <aside
         id="sidebar"
-        inert={!sidebarOpen}
+        inert={!sidebarOpen && !isDesktop}
         aria-label="Workspace navigation"
         className={`motion-sidebar h-screen w-64 flex-shrink-0 flex flex-col py-6 px-4 ${sidebarOpen ? 'sidebar-open' : ''}`}
       >
@@ -1107,27 +1131,22 @@ export default function App() {
         >
           <span className="material-symbols-outlined">close</span>
         </button>
-        <div className="flex items-center gap-3 mb-8 px-2">
-          <div className="w-8 h-8 rounded-lg bg-primary-container flex items-center justify-center">
-            <span className="material-symbols-outlined text-primary text-xl">monochrome_photos</span>
-          </div>
-          <div>
-            <h1 className="text-lg font-bold tracking-tighter text-[#2d3433] dark:text-stone-100">Motion</h1>
-            {AppState.workspaces.length > 1 ? (
-              <select
-                id="workspace-switcher"
-                className="workspace-switcher font-['Inter'] tracking-tight text-xs text-[#5f5e5e] dark:text-stone-400"
-                value={AppState.workspace?.id || ''}
-                onChange={handleWorkspaceChange}
-                aria-label="Switch workspace"
-              >
-                {AppState.workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-              </select>
-            ) : (
-              <p className="font-['Inter'] tracking-tight text-xs text-[#5f5e5e] dark:text-stone-400" id="sidebar-workspace-name">{workspaceName}</p>
-            )}
-            {onlineMemberCount > 1 ? <p className="mt-1 text-[10px] text-primary flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-primary"></span>{onlineMemberCount - 1} teammate{onlineMemberCount === 2 ? '' : 's'} online</p> : null}
-          </div>
+        <div className="sidebar-brand">
+          <a href="#dashboard" className="sidebar-logo" aria-label="Groupify home"><GroupifyLogo height={24} color="#F5F7F8" /></a>
+          {AppState.workspaces.length > 1 ? (
+            <select
+              id="workspace-switcher"
+              className="workspace-switcher sidebar-team"
+              value={AppState.workspace?.id || ''}
+              onChange={handleWorkspaceChange}
+              aria-label="Switch team"
+            >
+              {AppState.workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+            </select>
+          ) : (
+            <p className="sidebar-team" id="sidebar-workspace-name">{workspaceName}</p>
+          )}
+          {onlineMemberCount > 1 ? <p className="sidebar-online"><span></span>{onlineMemberCount - 1} teammate{onlineMemberCount === 2 ? '' : 's'} online</p> : null}
         </div>
 
         <button type="button" className="sidebar-search" onClick={openSearch} aria-label="Search (Ctrl+K)">
@@ -1153,7 +1172,7 @@ export default function App() {
 
         {route.path === 'ai-chat' ? (
           <div className="notion-ai-sidebar">
-            <h3 className="notion-ai-section-title">Motion AI</h3>
+            <h3 className="notion-ai-section-title">Groupify AI</h3>
             <div className="notion-ai-agents-row">
               <button
                 type="button"
@@ -1165,7 +1184,7 @@ export default function App() {
                 <div className="notion-ai-avatar-circle">
                   <span className="material-symbols-outlined text-xl">auto_awesome</span>
                 </div>
-                <span>Motion AI</span>
+                <span>Groupify AI</span>
               </button>
 
               <button
@@ -1324,6 +1343,10 @@ export default function App() {
             <span className="material-symbols-outlined">add_business</span>
             <span>New team</span>
           </button>
+          <a href="#profile" className="sidebar-user" aria-label="Your profile">
+            {avatarUrl ? <img src={avatarUrl} alt="" /> : <span className="sidebar-user-initials">{userInitials}</span>}
+            <span className="sidebar-user-name">{AppState.profile?.name || AppState.user?.email || 'You'}</span>
+          </a>
         </div>
       </aside>
 
@@ -1550,7 +1573,7 @@ export default function App() {
               <div className="flex items-center justify-center h-[60vh]">
                 <div className="text-center">
                   <div className="loading-spinner mx-auto mb-4"></div>
-                  <p className="text-sm text-on-surface-variant">Loading Motion...</p>
+                  <p className="text-sm text-on-surface-variant">Loading Groupify...</p>
                 </div>
               </div>
             ) : route.path === 'chat' ? (

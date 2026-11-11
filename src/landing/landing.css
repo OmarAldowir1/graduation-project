@@ -1,0 +1,18 @@
+/* Base styles from the design's <helmet>, scoped to the homepage. */
+/* The page (html) scrolls; body must not become its own scroll box or the sticky hero breaks. */
+html.landing-active { overflow-x: hidden !important; overflow-y: auto !important; height: auto !important; scroll-behavior: auto; background: #F5F7F8; }
+html.landing-active body { overflow: visible !important; height: auto !important; background: #F5F7F8; }
+.landing { color: #022635; font-family: Inter, system-ui, sans-serif; -webkit-font-smoothing: antialiased; background: #F5F7F8; }
+.landing * { box-sizing: border-box; }
+.landing a { color: #2E7CA9; text-decoration: none; }
+.landing a:hover { color: #022635; }
+.landing nav a:hover, .landing section#start a:hover, .landing [data-headline] a:hover { opacity: .85; }
+.landing button:focus-visible, .landing a:focus-visible { outline: 2px solid #2E7CA9; outline-offset: 3px; }
+/* Small screens: keep the logo and the two buttons; the section links don't fit. */
+@media (max-width: 760px) {
+  .landing .landing-nav-links { display: none !important; }
+}
+.landing nav a { white-space: nowrap; }
+@media (max-width: 380px) {
+  .landing nav a[data-app-link="login"] { padding: 9px 6px !important; }
+}

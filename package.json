@@ -2,7 +2,7 @@
   "name": "motion-workspace",
   "private": true,
   "version": "1.0.0",
-  "description": "Motion — Your workspace, simplified. Notes, databases, and tasks in one serene workspace.",
+  "description": "Groupify — Your workspace, simplified. Notes, databases, and tasks in one serene workspace.",
   "type": "module",
   "license": "MIT",
   "scripts": {

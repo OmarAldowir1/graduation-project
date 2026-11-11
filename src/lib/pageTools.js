@@ -104,7 +104,7 @@ export async function openHistory(page, onRestored) {
     return;
   }
   if (!versions?.length) {
-    body.innerHTML = '<p class="history-empty">No earlier versions yet. Motion saves a version automatically every 10 minutes while people edit.</p>';
+    body.innerHTML = '<p class="history-empty">No earlier versions yet. Groupify saves a version automatically every 10 minutes while people edit.</p>';
     return;
   }
   body.innerHTML = `<div class="history">

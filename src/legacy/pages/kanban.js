@@ -352,11 +352,11 @@ export async function renderKanban(container, route) {
         `DTSTART;VALUE=DATE:${date}`,
         `DTEND;VALUE=DATE:${toEndDateStamp(task.due_date)}`,
         `SUMMARY:${escapeIcs(task.title)}`,
-        `DESCRIPTION:${escapeIcs(`Motion task • ${task.status || 'todo'}`)}`,
+        `DESCRIPTION:${escapeIcs(`Groupify task • ${task.status || 'todo'}`)}`,
         'END:VEVENT'
       ].join('\r\n');
     });
-    const calendar = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Motion//Workspace//EN\r\n${events.join('\r\n')}\r\nEND:VCALENDAR\r\n`;
+    const calendar = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//Groupify//Workspace//EN\r\n${events.join('\r\n')}\r\nEND:VCALENDAR\r\n`;
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([calendar], { type: 'text/calendar;charset=utf-8' }));
     link.download = 'motion-tasks.ics';

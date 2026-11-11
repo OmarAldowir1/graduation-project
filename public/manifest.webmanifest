@@ -1,11 +1,11 @@
 {
-  "name": "Motion Workspace",
-  "short_name": "Motion",
+  "name": "Groupify Workspace",
+  "short_name": "Groupify",
   "description": "Notes, databases, tasks, and collaboration in one workspace.",
   "start_url": "/#dashboard",
   "display": "standalone",
-  "background_color": "#f9f9f8",
-  "theme_color": "#4268a8",
+  "background_color": "#F5F7F8",
+  "theme_color": "#022635",
   "icons": [
     {
       "src": "/favicon.svg",

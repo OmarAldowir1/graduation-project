@@ -360,7 +360,7 @@ export default function AIChatView({ activeChatId, onSelectChat, user }) {
           </div>
           <div>
             <h2 className="text-sm font-bold text-on-surface flex items-center gap-2">
-              {currentChat?.title || 'Motion AI'}
+              {currentChat?.title || 'Groupify AI'}
               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-primary/10 text-primary font-medium">
                 <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
                 Can act in your workspace
@@ -498,7 +498,7 @@ export default function AIChatView({ activeChatId, onSelectChat, user }) {
                   <span className="w-2 h-2 rounded-full bg-primary animate-bounce"></span>
                   <span className="w-2 h-2 rounded-full bg-primary animate-bounce [animation-delay:0.2s]"></span>
                   <span className="w-2 h-2 rounded-full bg-primary animate-bounce [animation-delay:0.4s]"></span>
-                  <span className="text-xs text-on-surface-variant ml-1 font-medium">Motion AI is looking at your workspace…</span>
+                  <span className="text-xs text-on-surface-variant ml-1 font-medium">Groupify AI is looking at your workspace…</span>
                 </div>
               </div>
             )}

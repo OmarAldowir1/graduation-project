@@ -110,7 +110,7 @@ export async function renderDashboard(container) {
         <div>
           <p class="home-eyebrow">${teamName}</p>
           <h1>Hi ${firstName} 👋</h1>
-          <p class="home-summary">${overdueMine.length ? `<strong class="is-overdue">${overdueMine.length} of your tasks ${overdueMine.length === 1 ? 'is' : 'are'} overdue.</strong> ` : ''}${myTasks.length ? `You have ${myTasks.length} open task${myTasks.length === 1 ? '' : 's'}${projects.length ? ` across ${projects.length} project${projects.length === 1 ? '' : 's'}` : ''}.` : projects.length ? 'Nothing assigned to you right now.' : 'Motion helps your team plan projects, split them into tasks, and finish them together.'}</p>
+          <p class="home-summary">${overdueMine.length ? `<strong class="is-overdue">${overdueMine.length} of your tasks ${overdueMine.length === 1 ? 'is' : 'are'} overdue.</strong> ` : ''}${myTasks.length ? `You have ${myTasks.length} open task${myTasks.length === 1 ? '' : 's'}${projects.length ? ` across ${projects.length} project${projects.length === 1 ? '' : 's'}` : ''}.` : projects.length ? 'Nothing assigned to you right now.' : 'Groupify helps your team plan projects, split them into tasks, and finish them together.'}</p>
         </div>
         <div class="home-actions">
           <button type="button" class="project-btn primary" data-new-project><span class="material-symbols-outlined">create_new_folder</span> New project</button>

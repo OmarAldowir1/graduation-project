@@ -514,7 +514,7 @@ export default function AIPageSidebar({
                     <div className="w-full bg-surface border border-outline-variant/25 rounded-2xl rounded-tl-xs p-3.5 shadow-2xs space-y-3">
                       <div className="flex items-center gap-2">
                         <NotionAIFace size={20} />
-                        <span className="text-[11px] font-bold text-on-surface">Motion AI</span>
+                        <span className="text-[11px] font-bold text-on-surface">Groupify AI</span>
                         <span className="text-[10px] text-on-surface-variant/60 font-medium ml-auto">Workers AI Free</span>
                       </div>
 
@@ -568,7 +568,7 @@ export default function AIPageSidebar({
                 <span className="w-2 h-2 rounded-full bg-primary animate-bounce"></span>
                 <span className="w-2 h-2 rounded-full bg-primary animate-bounce [animation-delay:0.2s]"></span>
                 <span className="w-2 h-2 rounded-full bg-primary animate-bounce [animation-delay:0.4s]"></span>
-                <span className="text-[11px] ml-1 font-medium">Motion AI is thinking...</span>
+                <span className="text-[11px] ml-1 font-medium">Groupify AI is thinking...</span>
               </div>
             )}
 

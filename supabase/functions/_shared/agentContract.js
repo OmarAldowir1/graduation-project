@@ -1,4 +1,4 @@
-// Motion AI agent: the workspace snapshot the model sees, the instructions it gets,
+// Groupify AI agent: the workspace snapshot the model sees, the instructions it gets,
 // and strict validation of what it proposes. Shared by the server handler, the
 // browser and the tests. The model never sees database ids — only short refs
 // (P1 project, G1 page, T1 task, U1 person) that the browser maps back.
@@ -68,7 +68,7 @@ export function formatSnapshot(s) {
 
 // ---------- instructions ----------
 
-export const AGENT_INSTRUCTIONS = `You are Motion AI, the assistant inside Motion, a team workspace for projects, pages and tasks.
+export const AGENT_INSTRUCTIONS = `You are Groupify AI, the assistant inside Groupify, a team workspace for projects, pages and tasks.
 You can answer questions about the team's work AND propose actions that the app performs after the user approves them.
 
 Respond with ONE JSON object and nothing else:

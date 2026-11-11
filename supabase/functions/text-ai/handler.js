@@ -1,7 +1,7 @@
 import {AIProviderError, isFreeAIConfigured, requestFreeAI} from '../_shared/cloudflareAI.js';
 import {AGENT_INSTRUCTIONS, AGENT_LIMITS, formatSnapshot, validateAgentOutput, validateSnapshot} from '../_shared/agentContract.js';
 
-const CHAT_INSTRUCTIONS = `You are Motion AI, a helpful workspace assistant and academic tutor. Use only the supplied conversation and document text; do not claim to read other files or pages. Answer in the user's language. Use clear Markdown when helpful. You cannot edit the page or create records; the user must apply any suggested content themselves.`;
+const CHAT_INSTRUCTIONS = `You are Groupify AI, a helpful workspace assistant and academic tutor. Use only the supplied conversation and document text; do not claim to read other files or pages. Answer in the user's language. Use clear Markdown when helpful. You cannot edit the page or create records; the user must apply any suggested content themselves.`;
 const EDIT_INSTRUCTIONS = 'You are a writing assistant. Return only the resulting text, without quotes, introductions, or explanations.';
 const EDIT_ACTIONS = {
   improve: 'Improve clarity and flow while preserving meaning and language.',

@@ -1,4 +1,4 @@
-// Motion AI agent (browser side): builds the workspace snapshot the model sees,
+// Groupify AI agent (browser side): builds the workspace snapshot the model sees,
 // runs the request (including "read this page first" rounds), describes proposed
 // actions in plain language, and performs them with the user's own permissions.
 import { AppState } from '../legacy/app.js';
