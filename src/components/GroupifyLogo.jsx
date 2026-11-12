@@ -21,3 +21,18 @@ export default function GroupifyLogo({ height = 26, color = 'currentColor', dot 
     </svg>
   );
 }
+
+// Loading indicator made from the logo: the head ring is the spinner (see .g-loader in groupify.css).
+export function GroupifyLoader({ size = 44, label = 'Loading', className = '' }) {
+  const height = Math.round(size * (6.4 / 5));
+  return (
+    <span className={`g-loader ${className}`} role="status" aria-label={label} style={{ width: size, height }}>
+      <svg viewBox="-2.1 -2.1 5 6.4" width={size} height={height} aria-hidden="true">
+        <circle className="g-loader-track" r="1.5" />
+        <circle className="g-loader-arc" r="1.5" pathLength="100" />
+        <path className="g-loader-shoulders" d="M-1.5 2.18 A1.5 1.5 0 0 0 1.5 2.18" />
+        <circle className="g-loader-dot" cx="1.88" cy="-1.7" r="0.3" />
+      </svg>
+    </span>
+  );
+}

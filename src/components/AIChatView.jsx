@@ -7,6 +7,7 @@ import {
 } from '../lib/aiChatStore.js';
 import { runAgent, describeAction, executeAgentActions } from '../lib/agent.js';
 import { parseAttachedDocument } from '../lib/documentParser.js';
+import { GroupifyLoader } from './GroupifyLogo.jsx';
 
 function renderMarkdownSnippet(text) {
   if (!text) return null;
@@ -600,7 +601,7 @@ export default function AIChatView({ activeChatId, onSelectChat, user }) {
           {/* Parsing Spinner */}
           {isParsingFile && (
             <div className="flex items-center gap-2 p-2.5 rounded-lg bg-surface-container-high border border-outline-variant/30 text-xs text-on-surface-variant">
-              <span className="material-symbols-outlined text-base text-primary animate-spin">progress_activity</span>
+              <GroupifyLoader size={16} label="Reading file" />
               <span>Reading and extracting document content... Please wait</span>
             </div>
           )}

@@ -1,3 +1,4 @@
+import { loaderHtml } from './loader.js';
 import Quill from 'quill';
 import QuillCursors from 'quill-cursors';
 import 'quill/dist/quill.core.css';
@@ -888,7 +889,7 @@ function createAIOverlay(quill, container) {
         <button type="button" class="mapc-close">×</button>
       </div>
       <div class="mapc-body mapc-loading">
-        <div class="loading-spinner"></div>
+        ${loaderHtml(22, 'Generating')}
         <span>Generating thoughtful revision...</span>
       </div>
     `;

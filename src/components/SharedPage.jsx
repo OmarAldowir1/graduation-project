@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchSharedPage } from '../lib/pageTools.js';
 import { sanitizeHtml } from '../lib/sanitize.js';
+import { GroupifyLoader } from './GroupifyLogo.jsx';
 
 // Read-only view of a page shared with "anyone with the link". No sign-in needed.
 export default function SharedPage({ token }) {
@@ -19,7 +20,7 @@ export default function SharedPage({ token }) {
   }, [token]);
 
   if (state.loading) {
-    return <div className="shared-page shared-center"><div className="loading-spinner" /></div>;
+    return <div className="shared-page shared-center"><GroupifyLoader size={48} /></div>;
   }
   if (!state.page) {
     return (

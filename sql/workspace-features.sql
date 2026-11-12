@@ -235,7 +235,7 @@ DECLARE
   inserted integer;
 BEGIN
   INSERT INTO public.notifications (recipient_id, actor_id, workspace_id, page_id, type, payload)
-  SELECT t.assignee_id, NULL, t.workspace_id, NULL, 'task_due',
+  SELECT t.assignee_id, NULL::uuid, t.workspace_id, NULL::uuid, 'task_due',
          jsonb_build_object('title', t.title, 'task_id', t.id, 'due', t.due_date,
                             'when', CASE WHEN t.due_date < current_date THEN 'overdue' WHEN t.due_date = current_date THEN 'today' ELSE 'tomorrow' END)
   FROM public.tasks t

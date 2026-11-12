@@ -204,7 +204,7 @@ BEGIN
   excerpt := left(regexp_replace(NEW.content, '\s+', ' ', 'g'), 140);
 
   INSERT INTO public.notifications (recipient_id, actor_id, workspace_id, page_id, type, payload)
-  SELECT DISTINCT wm.user_id, NEW.user_id, task_workspace, NULL,
+  SELECT DISTINCT wm.user_id, NEW.user_id, task_workspace, NULL::uuid,
          CASE WHEN wm.user_id = ANY(COALESCE(NEW.mentions, '{}')) THEN 'mention' ELSE 'task_comment' END,
          jsonb_build_object('title', task_row.title, 'task_id', task_row.id, 'actor_name', actor_name, 'excerpt', excerpt)
   FROM public.workspace_members wm

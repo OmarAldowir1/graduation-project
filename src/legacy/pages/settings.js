@@ -1,6 +1,6 @@
 import { requestInput, requestConfirmation } from "../../lib/dialogs.js";
 // ============================================
-// MOTION — Settings Page Module (Legacy)
+// GROUPIFY — Settings page (tabs: account, notifications, team, archive & backup)
 // ============================================
 
 import { AppState, setBreadcrumb, showToast, handleSignOut } from '../app.js';
@@ -26,6 +26,30 @@ import {
 } from '../../lib/queries.js';
 import { escapeHtml } from '../../lib/sanitize.js';
 
+const SECTIONS = [
+  { id: 'account', icon: 'person', label: 'My account', hint: 'Name, photo and look' },
+  { id: 'notifications', icon: 'notifications', label: 'Notifications', hint: 'What we tell you about' },
+  { id: 'team', icon: 'group', label: 'Team', hint: 'Members and invitations' },
+  { id: 'data', icon: 'inventory_2', label: 'Archive & backup', hint: 'Restore and export' }
+];
+
+const ROLE_HELP = {
+  owner: 'Full control of the team',
+  admin: 'Can manage members and content',
+  editor: 'Can create and edit everything',
+  commenter: 'Can read and comment',
+  viewer: 'Can only read'
+};
+
+function initialsOf(text) {
+  return String(text || 'U').trim().split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase() || 'U';
+}
+
+function avatarMarkup(url, name, size = 'md') {
+  const safe = /^https?:\/\//i.test(url || '') ? escapeHtml(url) : '';
+  return `<span class="gs-avatar gs-avatar-${size}">${safe ? `<img src="${safe}" alt="" />` : escapeHtml(initialsOf(name))}</span>`;
+}
+
 export async function renderSettings(container, route) {
   setBreadcrumb('Settings');
 
@@ -34,6 +58,9 @@ export async function renderSettings(container, route) {
 
   const workspaceId = AppState.workspace?.id;
   const isWorkspaceOwner = AppState.workspace?.owner_id === userId;
+  const requested = route?.query?.get('section');
+  let activeSection = SECTIONS.some((section) => section.id === requested) ? requested : 'account';
+
   const [profileResult, settingsResult, membersResult, invitationsResult, archivedPagesResult] = await Promise.all([
     getUserProfile(userId),
     getSettings(userId),
@@ -44,10 +71,12 @@ export async function renderSettings(container, route) {
 
   const loadError = profileResult.error || settingsResult.error;
   if (loadError) {
-    container.innerHTML = `<div class="error-state m-8"><span class="material-symbols-outlined">error</span><h3>Failed to load settings</h3><p>${escapeHtml(loadError.message || 'Please try again.')}</p><button id="settings-retry" class="mt-4 px-4 py-2 bg-primary text-on-primary rounded-lg text-sm font-semibold" type="button">Retry</button></div>`;
-    container.querySelector('#settings-retry')?.addEventListener('click', async () => renderSettings(container));
+    container.innerHTML = `<div class="gs-page"><div class="gs-card gs-error"><span class="material-symbols-outlined">error</span><h3>Settings could not load</h3><p>${escapeHtml(loadError.message || 'Please try again.')}</p><button id="settings-retry" class="gs-btn gs-btn-primary" type="button">Try again</button></div></div>`;
+    container.querySelector('#settings-retry')?.addEventListener('click', () => renderSettings(container, route));
     return;
   }
+
+  const rerender = (section = activeSection) => renderSettings(container, { query: new URLSearchParams({ section }) });
 
   const profile = profileResult.data || {};
   const settings = settingsResult.data || {};
@@ -55,258 +84,430 @@ export async function renderSettings(container, route) {
   const members = membersResult.data || [];
   const invitations = invitationsResult.data || [];
   const archivedPages = archivedPagesResult.data || [];
-  const safeProfileEmail = escapeHtml(profile.email || '');
-  const safeWorkspaceName = escapeHtml(AppState.workspace?.name || 'this workspace');
-  const safeAvatarUrl = /^https?:\/\//i.test(profile.avatar_url || '') ? escapeHtml(profile.avatar_url) : '';
+  const myRole = members.find((member) => member.user_id === userId)?.role || (isWorkspaceOwner ? 'owner' : 'member');
+  const teamName = AppState.workspace?.name || 'your team';
+  const safeTeamName = escapeHtml(teamName);
+  const currentTheme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
 
   container.innerHTML = `
-    <div class="flex-1 overflow-y-auto p-8 lg:p-12">
-      <div class="max-w-4xl mx-auto">
-        <header class="mb-12">
-          <h2 class="font-['Inter'] tracking-tight text-on-surface text-3xl font-bold">Settings</h2>
-          <p class="text-on-surface-variant mt-2">Manage your preferences, your team and its members.</p>
-        </header>
+    <div class="gs-page">
+      <header class="gs-head">
+        <p class="gs-eyebrow">Account &amp; team</p>
+        <h1>Settings</h1>
+        <p>Your account, notifications and the <strong>${safeTeamName}</strong> team. Each section saves on its own.</p>
+      </header>
 
-        <div class="grid grid-cols-1 md:grid-cols-12 gap-8">
-          <nav class="md:col-span-3 space-y-1">
-            <button class="w-full text-left px-4 py-2.5 rounded-lg bg-surface-container-lowest text-on-surface font-semibold shadow-sm text-sm flex items-center gap-3" data-settings-tab="account">
-              <span class="material-symbols-outlined text-lg">person</span>
-              My Account
-            </button>
-            <button class="w-full text-left px-4 py-2.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low transition-colors text-sm flex items-center gap-3" data-settings-tab="workspace">
-              <span class="material-symbols-outlined text-lg">group</span>
-              Team
-            </button>
-            <button class="w-full text-left px-4 py-2.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low transition-colors text-sm flex items-center gap-3" data-settings-tab="notifications">
-              <span class="material-symbols-outlined text-lg">notifications</span>
-              Notifications
-            </button>
-            <button class="w-full text-left px-4 py-2.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low transition-colors text-sm flex items-center gap-3" data-settings-tab="archive">
-              <span class="material-symbols-outlined text-lg">archive</span>
-              Archived
-            </button>
-            <button class="w-full text-left px-4 py-2.5 rounded-lg text-on-surface-variant hover:bg-surface-container-low transition-colors text-sm flex items-center gap-3 mt-6 text-error" id="btn-sign-out">
-              <span class="material-symbols-outlined text-lg">logout</span>
-              Sign Out
-            </button>
-          </nav>
+      <div class="gs-layout">
+        <nav class="gs-tabs" role="tablist" aria-label="Settings sections">
+          ${SECTIONS.map((section) => `
+            <button type="button" role="tab" class="gs-tab" id="gs-tab-${section.id}" data-settings-tab="${section.id}" aria-controls="settings-${section.id}">
+              <span class="material-symbols-outlined">${section.icon}</span>
+              <span class="gs-tab-text"><strong>${section.label}</strong><small>${section.hint}</small></span>
+              ${section.id === 'team' && invitations.length ? `<span class="gs-tab-badge">${invitations.length}</span>` : ''}
+            </button>`).join('')}
+        </nav>
 
-          <div class="md:col-span-9 space-y-12">
-            <section class="space-y-6" id="settings-account">
-              <div>
-                <h3 class="text-lg font-semibold text-on-surface">My Account</h3>
-                <p class="text-sm text-on-surface-variant">Update your photo and personal details.</p>
+        <div class="gs-panels">
+          <!-- ===== My account ===== -->
+          <section class="gs-panel" id="settings-account" role="tabpanel" aria-labelledby="gs-tab-account">
+            <form class="gs-card" id="gs-profile-form" novalidate>
+              <div class="gs-card-head">
+                <div><h2>Profile</h2><p>How teammates see you in tasks, comments and chat.</p></div>
               </div>
-              <div class="bg-surface-container-lowest p-6 rounded-xl space-y-8">
-                <div class="flex items-center gap-6 pb-8 border-b border-surface-container-high">
-                  <div class="relative group">
-                    <div class="w-20 h-20 rounded-full overflow-hidden bg-surface-container-low flex items-center justify-center">
-                      ${
-                        safeAvatarUrl
-                          ? `<img class="w-full h-full object-cover" src="${safeAvatarUrl}" alt="Profile" />`
-                          : `<span class="text-2xl font-bold text-on-surface-variant">${escapeHtml((profile.name || 'U')[0].toUpperCase())}</span>`
-                      }
-                    </div>
-                    <button id="settings-avatar-edit" class="absolute bottom-0 right-0 p-1.5 bg-white shadow-lg rounded-full text-primary hover:text-on-surface transition-colors" type="button" title="Change profile photo">
-                      <span class="material-symbols-outlined text-sm">edit</span>
-                    </button>
-                  </div>
-                  <div>
-                    <h4 class="font-medium">Profile Photo</h4>
-                    <p class="text-xs text-on-surface-variant mt-1">PNG, JPG or GIF. Max 2MB.</p>
-                  </div>
-                </div>
-
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                  <div class="space-y-2">
-                    <label class="text-xs font-bold uppercase tracking-widest text-on-surface-variant">Full Name</label>
-                    <input id="settings-name" class="w-full px-4 py-2.5 bg-surface-container rounded-lg border-none focus:ring-1 focus:ring-primary focus:bg-surface-container-lowest text-sm transition-all" type="text" value="${
-                      escapeHtml(profile.name || '')
-                    }" placeholder="Your name" />
-                  </div>
-                  <div class="space-y-2">
-                    <label class="text-xs font-bold uppercase tracking-widest text-on-surface-variant">Email Address</label>
-                    <input id="settings-email" class="w-full px-4 py-2.5 bg-surface-container rounded-lg border-none focus:ring-1 focus:ring-primary focus:bg-surface-container-lowest text-sm transition-all opacity-60" type="email" value="${
-                      safeProfileEmail
-                    }" disabled />
-                  </div>
-                </div>
-              </div>
-
-              <div class="bg-surface-container-lowest p-6 rounded-xl space-y-4">
+              <div class="gs-profile-preview">
+                <span id="gs-avatar-preview">${avatarMarkup(profile.avatar_url, profile.name || profile.email, 'lg')}</span>
                 <div>
-                  <h4 class="font-semibold text-on-surface">Workspace backup</h4>
-                  <p class="text-sm text-on-surface-variant mt-1">Export your pages and tasks as JSON, or import a backup into this workspace.</p>
+                  <strong id="gs-name-preview">${escapeHtml(profile.name || 'Your name')}</strong>
+                  <span>${escapeHtml(profile.email || '')}</span>
                 </div>
-                <div class="flex flex-wrap gap-3">
-                  <button id="settings-export-backup" class="px-4 py-2.5 bg-primary text-on-primary rounded-lg text-sm font-semibold" type="button">
-                    <span class="material-symbols-outlined text-sm align-middle">download</span> Export backup
-                  </button>
-                  <button id="settings-import-backup" class="px-4 py-2.5 bg-surface-container-high text-on-surface rounded-lg text-sm font-semibold" type="button">
-                    <span class="material-symbols-outlined text-sm align-middle">upload_file</span> Import backup
-                  </button>
-                  <input id="settings-backup-input" type="file" accept="application/json,.json" hidden />
+              </div>
+              <div class="gs-fields">
+                <label class="gs-field">
+                  <span>Display name</span>
+                  <input id="settings-name" name="name" type="text" maxlength="80" autocomplete="name" value="${escapeHtml(profile.name || '')}" placeholder="e.g. Omar Aldowir" required />
+                </label>
+                <label class="gs-field">
+                  <span>Email</span>
+                  <input id="settings-email" type="email" value="${escapeHtml(profile.email || '')}" disabled />
+                  <small>This is the email you sign in with. It can’t be changed here.</small>
+                </label>
+                <label class="gs-field gs-field-wide">
+                  <span>Photo link</span>
+                  <div class="gs-inline">
+                    <input id="settings-avatar-url" name="avatar" type="url" inputmode="url" value="${escapeHtml(profile.avatar_url || '')}" placeholder="https://… link to an image" />
+                    <button type="button" class="gs-btn gs-btn-ghost" id="settings-avatar-clear" ${profile.avatar_url ? '' : 'hidden'}>Remove</button>
+                  </div>
+                  <small>Paste a link to a square image (PNG or JPG). Leave empty to show your initials.</small>
+                </label>
+              </div>
+              <div class="gs-card-foot">
+                <span class="gs-status" id="gs-profile-status" aria-live="polite"></span>
+                <button type="button" class="gs-btn gs-btn-ghost" id="gs-profile-reset" disabled>Discard</button>
+                <button type="submit" class="gs-btn gs-btn-primary" id="btn-save-settings" disabled>Save changes</button>
+              </div>
+            </form>
+
+            <div class="gs-card">
+              <div class="gs-card-head">
+                <div><h2>Appearance</h2><p>Choose how Groupify looks on this device.</p></div>
+                <div class="gs-segment" role="radiogroup" aria-label="Theme">
+                  <button type="button" role="radio" data-theme-choice="light" aria-checked="${currentTheme === 'light'}"><span class="material-symbols-outlined">light_mode</span>Light</button>
+                  <button type="button" role="radio" data-theme-choice="dark" aria-checked="${currentTheme === 'dark'}"><span class="material-symbols-outlined">dark_mode</span>Dark</button>
                 </div>
-                <p class="text-xs text-on-surface-variant">Imported records are added as new records; existing content is not overwritten.</p>
               </div>
-            </section>
-
-            <section class="space-y-6" id="settings-notifications">
-              <div>
-                <h3 class="text-lg font-semibold text-on-surface">Notifications</h3>
-                <p class="text-sm text-on-surface-variant">Configure how you want to be notified.</p>
-              </div>
-              <div class="bg-surface-container-lowest rounded-xl overflow-hidden">
-                ${renderNotificationRow('email_notifications', 'mail', 'Email Notifications', 'Receive daily digests and activity summaries.', prefs.email_notifications)}
-                ${renderNotificationRow('direct_messages', 'chat_bubble', 'Direct Messages', 'Get notified when someone sends you a message.', prefs.direct_messages)}
-                ${renderNotificationRow('product_updates', 'rocket_launch', 'Product Updates', 'Stay up to date with new features and releases.', prefs.product_updates)}
-              </div>
-
-            </section>
-
-            <section class="space-y-6" id="settings-archive">
-              <div>
-                <h3 class="text-lg font-semibold text-on-surface">Archived pages</h3>
-                <p class="text-sm text-on-surface-variant">Archived pages are hidden from Notes and Database until restored.</p>
-              </div>
-              <div class="bg-surface-container-lowest rounded-xl overflow-hidden">
-                ${archivedPages.length === 0
-                  ? '<p class="p-5 text-sm text-on-surface-variant">No archived pages.</p>'
-                  : archivedPages.map((page) => `
-                    <div class="flex items-center gap-3 p-4 border-b border-surface-container-low last:border-b-0">
-                      <span class="text-lg">${escapeHtml(page.icon || '📄')}</span>
-                      <div class="min-w-0 flex-1">
-                        <p class="text-sm font-semibold truncate">${escapeHtml(page.title || 'Untitled')}</p>
-                        <p class="text-xs text-on-surface-variant">Archived ${timeSince(page.archived_at)}</p>
-                      </div>
-                      <button type="button" class="restore-page text-primary text-xs font-semibold hover:underline" data-page-id="${page.id}">Restore</button>
-                    </div>
-                  `).join('')}
-              </div>
-            </section>
-
-            <section class="space-y-6" id="settings-workspace">
-              <div>
-                <h3 class="text-lg font-semibold text-on-surface">Team</h3>
-                <p class="text-sm text-on-surface-variant">Invite people to ${safeWorkspaceName}. Everyone on the team can see its projects, pages and tasks.</p>
-              </div>
-              ${isWorkspaceOwner ? `<form id="workspace-name-form" class="flex flex-col sm:flex-row gap-3">
-                <input id="workspace-name-input" class="flex-1 px-4 py-2.5 bg-surface-container rounded-lg border-0 text-sm" value="${escapeHtml(AppState.workspace?.name || '')}" maxlength="80" required />
-                <button class="px-4 py-2.5 bg-primary text-on-primary rounded-lg text-sm font-semibold" type="submit">Save name</button>
-              </form>` : ''}
-              <div class="bg-surface-container-lowest rounded-xl overflow-hidden">
-                ${isWorkspaceOwner ? `<form id="invite-member-form" class="flex flex-col sm:flex-row gap-3 p-5 border-b border-surface-container-low">
-                  <input id="invite-member-email" class="flex-1 min-w-0 px-4 py-2.5 bg-surface-container rounded-lg border-0 text-sm" type="email" placeholder="colleague@example.com" required />
-                  <select id="invite-member-role" class="px-3 py-2.5 bg-surface-container rounded-lg border-0 text-sm">
-                    <option value="editor">Editor</option>
-                    <option value="commenter">Commenter</option>
-                    <option value="viewer">Viewer</option>
-                  </select>
-                  <button class="px-4 py-2.5 bg-primary text-on-primary rounded-lg text-sm font-semibold" type="submit">Invite</button>
-                </form>` : ''}
-                ${
-                  invitations.length
-                    ? `<div class="border-b border-surface-container-low">
-                        <div class="px-5 pt-4 pb-2 text-xs font-bold uppercase tracking-widest text-on-surface-variant">Pending invitations</div>
-                        ${invitations.map((invitation) => `
-                          <div class="flex items-center gap-3 px-5 py-3">
-                            <span class="material-symbols-outlined text-on-surface-variant">mail</span>
-                            <div class="min-w-0 flex-1">
-                              <p class="text-sm font-medium truncate">${escapeHtml(invitation.email)}</p>
-                              <p class="text-xs text-on-surface-variant">${escapeHtml(invitation.role)} · ${timeSince(invitation.created_at)}</p>
-                            </div>
-                            ${isWorkspaceOwner ? `<button class="revoke-invitation text-error text-xs font-semibold hover:underline" data-invitation-id="${invitation.id}" type="button">Revoke</button>` : ''}
-                          </div>
-                        `).join('')}
-                      </div>`
-                    : ''
-                }
-                ${
-                  members.length === 0
-                    ? '<div class="p-6 text-sm text-on-surface-variant">No team members yet. Invite someone above to start collaborating.</div>'
-                    : members
-                        .map((member) => {
-                          const memberName = member.user?.name || member.user?.email || 'Workspace member';
-                          const safeMemberName = escapeHtml(memberName);
-                          const safeMemberEmail = escapeHtml(member.user?.email || '');
-                          const initials = memberName.split(/\s+/).map((part) => part[0]).join('').slice(0, 2).toUpperCase();
-                          const isSelf = member.user_id === userId;
-                          return `
-                            <div class="workspace-member-row flex items-center gap-4 p-5 border-b border-surface-container-low last:border-b-0">
-                              <div class="w-10 h-10 rounded-full bg-primary-container text-on-primary-container flex items-center justify-center text-xs font-bold">${initials}</div>
-                              <div class="min-w-0 flex-1">
-                                <p class="text-sm font-semibold truncate">${safeMemberName}${isSelf ? ' (you)' : ''}</p>
-                                <p class="text-xs text-on-surface-variant truncate">${safeMemberEmail}</p>
-                              </div>
-                              <select class="member-role-select text-xs rounded-lg bg-surface-container px-3 py-2 border-0" data-member-id="${member.id}" ${isSelf || !isWorkspaceOwner ? 'disabled' : ''}>
-                                ${[...(member.role === 'owner' ? ['owner'] : []), 'admin', 'editor', 'commenter', 'viewer'].map((role) => `<option value="${role}" ${member.role === role ? 'selected' : ''}>${role[0].toUpperCase() + role.slice(1)}</option>`).join('')}
-                              </select>
-                              ${isSelf || !isWorkspaceOwner ? '' : `<button class="remove-member text-error text-xs font-semibold hover:underline" data-member-id="${member.id}" type="button">Remove</button>`}
-                            </div>
-                          `;
-                        })
-                        .join('')
-                }
-              </div>
-            </section>
-
-            <div class="flex items-center justify-end gap-3 pt-6 border-t border-surface-container-high">
-              <button class="px-6 py-2 text-sm font-medium text-on-surface-variant hover:text-on-surface transition-colors" id="btn-cancel">Cancel</button>
-              <button class="px-8 py-2 text-sm font-semibold bg-primary text-on-primary rounded-lg shadow-sm hover:bg-primary-dim transition-all active:scale-95" id="btn-save-settings">Save Changes</button>
             </div>
-          </div>
+
+            <div class="gs-card gs-card-quiet">
+              <div class="gs-card-head">
+                <div><h2>Log out</h2><p>Sign out of Groupify on this device. Your work stays saved.</p></div>
+                <button type="button" class="gs-btn gs-btn-danger" id="btn-sign-out"><span class="material-symbols-outlined">logout</span>Log out</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ===== Notifications ===== -->
+          <section class="gs-panel" id="settings-notifications" role="tabpanel" aria-labelledby="gs-tab-notifications">
+            <div class="gs-card">
+              <div class="gs-card-head">
+                <div><h2>Notifications</h2><p>Changes save as soon as you flip a switch.</p></div>
+                <span class="gs-status" id="gs-notif-status" aria-live="polite"></span>
+              </div>
+              <div class="gs-list">
+                ${renderNotificationRow('email_notifications', 'mail', 'Email summaries', 'A daily digest of what changed in your projects.', prefs.email_notifications)}
+                ${renderNotificationRow('direct_messages', 'chat_bubble', 'Messages and mentions', 'When someone messages you or @mentions you.', prefs.direct_messages)}
+                ${renderNotificationRow('product_updates', 'rocket_launch', 'Groupify news', 'New features and improvements, now and then.', prefs.product_updates)}
+              </div>
+            </div>
+          </section>
+
+          <!-- ===== Team ===== -->
+          <section class="gs-panel" id="settings-team" role="tabpanel" aria-labelledby="gs-tab-team">
+            ${!workspaceId ? '<div class="gs-card"><p class="gs-empty">You are not in a team yet. Create one from the sidebar with “New team”.</p></div>' : `
+            <form class="gs-card" id="workspace-name-form">
+              <div class="gs-card-head">
+                <div><h2>Team name</h2><p>${isWorkspaceOwner ? 'Shown in the sidebar and on invitations.' : 'Only the team owner can rename the team.'}</p></div>
+              </div>
+              <div class="gs-inline">
+                <input id="workspace-name-input" value="${safeTeamName}" maxlength="80" required ${isWorkspaceOwner ? '' : 'disabled'} aria-label="Team name" />
+                ${isWorkspaceOwner ? '<button class="gs-btn gs-btn-primary" type="submit" id="workspace-name-save" disabled>Save</button>' : ''}
+              </div>
+            </form>
+
+            <div class="gs-card">
+              <div class="gs-card-head">
+                <div><h2>Invite people</h2><p>${isWorkspaceOwner ? 'We create an invite link and copy it for you. Send it to your teammate.' : 'Ask the team owner to invite new people.'}</p></div>
+              </div>
+              ${isWorkspaceOwner ? `
+              <form id="invite-member-form" class="gs-invite">
+                <input id="invite-member-email" type="email" placeholder="teammate@university.edu" required aria-label="Email address" />
+                <select id="invite-member-role" aria-label="Role">
+                  <option value="editor">Editor</option>
+                  <option value="commenter">Commenter</option>
+                  <option value="viewer">Viewer</option>
+                </select>
+                <button class="gs-btn gs-btn-primary" type="submit"><span class="material-symbols-outlined">person_add</span>Invite</button>
+              </form>
+              <p class="gs-role-help" id="gs-role-help">${ROLE_HELP.editor}.</p>` : ''}
+            </div>
+
+            ${invitations.length ? `
+            <div class="gs-card">
+              <div class="gs-card-head"><div><h2>Waiting to join <span class="gs-count">${invitations.length}</span></h2><p>Invites that haven’t been accepted yet.</p></div></div>
+              <div class="gs-list">
+                ${invitations.map((invitation) => `
+                  <div class="gs-row">
+                    <span class="gs-avatar gs-avatar-md gs-avatar-muted"><span class="material-symbols-outlined">mail</span></span>
+                    <div class="gs-row-main"><strong>${escapeHtml(invitation.email)}</strong><small>${escapeHtml(capitalize(invitation.role))} · invited ${timeSince(invitation.created_at)}</small></div>
+                    ${isWorkspaceOwner ? `
+                      <button class="gs-btn gs-btn-ghost copy-invitation" data-token="${escapeHtml(invitation.token || '')}" type="button"><span class="material-symbols-outlined">link</span>Copy link</button>
+                      <button class="gs-icon-btn revoke-invitation" data-invitation-id="${invitation.id}" type="button" title="Cancel invitation" aria-label="Cancel invitation for ${escapeHtml(invitation.email)}"><span class="material-symbols-outlined">close</span></button>` : ''}
+                  </div>`).join('')}
+              </div>
+            </div>` : ''}
+
+            <div class="gs-card">
+              <div class="gs-card-head"><div><h2>Members <span class="gs-count">${members.length}</span></h2><p>Everyone here can see the team’s projects, pages and tasks.</p></div></div>
+              <div class="gs-list">
+                ${members.length === 0 ? '<p class="gs-empty">No members yet.</p>' : members.map((member) => {
+                  const memberName = member.user?.name || member.user?.email || 'Team member';
+                  const isSelf = member.user_id === userId;
+                  const canEdit = isWorkspaceOwner && !isSelf && member.role !== 'owner';
+                  return `
+                    <div class="gs-row workspace-member-row">
+                      ${avatarMarkup(member.user?.avatar_url, memberName)}
+                      <div class="gs-row-main"><strong>${escapeHtml(memberName)}${isSelf ? ' <em>(you)</em>' : ''}</strong><small>${escapeHtml(member.user?.email || '')}</small></div>
+                      ${canEdit ? `
+                        <select class="member-role-select" data-member-id="${member.id}" aria-label="Role for ${escapeHtml(memberName)}">
+                          ${['admin', 'editor', 'commenter', 'viewer'].map((role) => `<option value="${role}" ${member.role === role ? 'selected' : ''}>${capitalize(role)}</option>`).join('')}
+                        </select>
+                        <button class="gs-icon-btn remove-member" data-member-id="${member.id}" data-member-name="${escapeHtml(memberName)}" type="button" title="Remove from team" aria-label="Remove ${escapeHtml(memberName)}"><span class="material-symbols-outlined">person_remove</span></button>`
+                        : `<span class="gs-role-chip" title="${escapeHtml(ROLE_HELP[member.role] || '')}">${escapeHtml(capitalize(member.role || 'member'))}</span>`}
+                    </div>`;
+                }).join('')}
+              </div>
+              ${isWorkspaceOwner ? '' : `<p class="gs-foot-note">Your role: <strong>${escapeHtml(capitalize(myRole))}</strong> — ${escapeHtml(ROLE_HELP[myRole] || 'member of this team')}.</p>`}
+            </div>`}
+          </section>
+
+          <!-- ===== Archive & backup ===== -->
+          <section class="gs-panel" id="settings-data" role="tabpanel" aria-labelledby="gs-tab-data">
+            <div class="gs-card">
+              <div class="gs-card-head"><div><h2>Archived pages <span class="gs-count">${archivedPages.length}</span></h2><p>Archived pages are hidden everywhere until you restore them.</p></div></div>
+              <div class="gs-list">
+                ${archivedPages.length === 0 ? '<p class="gs-empty">Nothing archived. Pages you archive will wait here.</p>' : archivedPages.map((page) => `
+                  <div class="gs-row">
+                    <span class="gs-page-icon">${escapeHtml(page.icon || '📄')}</span>
+                    <div class="gs-row-main"><strong>${escapeHtml(page.title || 'Untitled')}</strong><small>Archived ${timeSince(page.archived_at)}</small></div>
+                    <button type="button" class="gs-btn gs-btn-ghost restore-page" data-page-id="${page.id}"><span class="material-symbols-outlined">unarchive</span>Restore</button>
+                  </div>`).join('')}
+              </div>
+            </div>
+
+            <div class="gs-card">
+              <div class="gs-card-head"><div><h2>Backup</h2><p>Download the team’s pages and tasks as a file, or add them back from one. Importing never overwrites anything.</p></div></div>
+              <div class="gs-actions">
+                <button id="settings-export-backup" class="gs-btn gs-btn-primary" type="button"><span class="material-symbols-outlined">download</span>Download backup</button>
+                <button id="settings-import-backup" class="gs-btn gs-btn-ghost" type="button"><span class="material-symbols-outlined">upload_file</span>Import a backup…</button>
+                <input id="settings-backup-input" type="file" accept="application/json,.json" hidden />
+              </div>
+            </div>
+          </section>
         </div>
       </div>
     </div>
   `;
 
-  document.getElementById('btn-save-settings')?.addEventListener('click', async () => {
-    const name = document.getElementById('settings-name')?.value;
-    const toggles = container.querySelectorAll('.notification-toggle');
-    const newPrefs = {};
-    toggles.forEach((t) => {
-      newPrefs[t.dataset.key] = t.checked;
+  // ---------- Section switching (tabs) ----------
+  const showSection = (id, { focus = false } = {}) => {
+    activeSection = id;
+    container.querySelectorAll('[data-settings-tab]').forEach((tab) => {
+      const on = tab.dataset.settingsTab === id;
+      tab.classList.toggle('is-active', on);
+      tab.setAttribute('aria-selected', String(on));
+      tab.tabIndex = on ? 0 : -1;
+      if (on && focus) tab.focus();
     });
-
-    try {
-      const { error: profileError } = await updateUserProfile(userId, { name });
-      if (profileError) throw profileError;
-      const { error: settingsError } = await updateSettings(userId, { preferences: newPrefs });
-      if (settingsError) throw settingsError;
-      AppState.profile = { ...AppState.profile, name };
-      showToast('Settings saved!', 'success');
-    } catch (err) {
-      showToast('Failed to save: ' + err.message, 'error');
+    container.querySelectorAll('.gs-panel').forEach((panel) => { panel.hidden = panel.id !== `settings-${id}`; });
+    const hash = `#settings?section=${id}`;
+    if (window.location.hash !== hash) history.replaceState(null, '', hash);
+  };
+  const tabs = [...container.querySelectorAll('[data-settings-tab]')];
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => showSection(tab.dataset.settingsTab));
+    tab.addEventListener('keydown', (event) => {
+      const step = ['ArrowDown', 'ArrowRight'].includes(event.key) ? 1 : ['ArrowUp', 'ArrowLeft'].includes(event.key) ? -1 : 0;
+      if (!step) return;
+      event.preventDefault();
+      showSection(tabs[(index + step + tabs.length) % tabs.length].dataset.settingsTab, { focus: true });
+    });
+  });
+  showSection(activeSection);
+  // Links like "Edit profile" in the avatar menu change the hash while this page is open.
+  if (container._gsHashListener) window.removeEventListener('hashchange', container._gsHashListener);
+  container._gsHashListener = () => {
+    if (!container.isConnected) {
+      window.removeEventListener('hashchange', container._gsHashListener);
+      return;
     }
+    const match = window.location.hash.match(/^#settings\?section=([a-z]+)/);
+    if (match && SECTIONS.some((section) => section.id === match[1])) showSection(match[1]);
+  };
+  window.addEventListener('hashchange', container._gsHashListener);
+
+  // ---------- Profile (explicit save, only when something changed) ----------
+  const profileForm = container.querySelector('#gs-profile-form');
+  const nameInput = container.querySelector('#settings-name');
+  const avatarInput = container.querySelector('#settings-avatar-url');
+  const saveButton = container.querySelector('#btn-save-settings');
+  const resetButton = container.querySelector('#gs-profile-reset');
+  const clearAvatar = container.querySelector('#settings-avatar-clear');
+  const profileStatus = container.querySelector('#gs-profile-status');
+  const original = { name: profile.name || '', avatar: profile.avatar_url || '' };
+  const syncProfileForm = () => {
+    const name = nameInput.value.trim();
+    const avatar = avatarInput.value.trim();
+    const dirty = name !== original.name || avatar !== original.avatar;
+    const avatarValid = !avatar || /^https?:\/\/\S+$/i.test(avatar);
+    saveButton.disabled = !dirty || !name || !avatarValid;
+    resetButton.disabled = !dirty;
+    clearAvatar.hidden = !avatar;
+    profileStatus.textContent = !name ? 'Name can’t be empty' : !avatarValid ? 'Photo link must start with https://' : dirty ? 'Unsaved changes' : '';
+    profileStatus.dataset.tone = !name || !avatarValid ? 'error' : dirty ? 'pending' : '';
+    container.querySelector('#gs-name-preview').textContent = name || 'Your name';
+    container.querySelector('#gs-avatar-preview').innerHTML = avatarMarkup(avatarValid ? avatar : '', name || profile.email, 'lg');
+  };
+  nameInput.addEventListener('input', syncProfileForm);
+  avatarInput.addEventListener('input', syncProfileForm);
+  clearAvatar.addEventListener('click', () => { avatarInput.value = ''; syncProfileForm(); avatarInput.focus(); });
+  resetButton.addEventListener('click', () => { nameInput.value = original.name; avatarInput.value = original.avatar; syncProfileForm(); });
+  profileForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (saveButton.disabled) return;
+    const name = nameInput.value.trim();
+    const avatar = avatarInput.value.trim() || null;
+    saveButton.disabled = true;
+    saveButton.textContent = 'Saving…';
+    const { error } = await updateUserProfile(userId, { name, avatar_url: avatar });
+    saveButton.textContent = 'Save changes';
+    if (error) {
+      showToast(`Could not save your profile: ${error.message}`, 'error');
+      syncProfileForm();
+      return;
+    }
+    original.name = name;
+    original.avatar = avatar || '';
+    AppState.profile = { ...AppState.profile, name, avatar_url: avatar };
+    window.dispatchEvent(new CustomEvent('groupify:profile-updated'));
+    syncProfileForm();
+    profileStatus.textContent = 'Saved';
+    profileStatus.dataset.tone = 'ok';
+    showToast('Profile saved', 'success');
   });
 
-  document.getElementById('btn-sign-out')?.addEventListener('click', handleSignOut);
-  document.getElementById('btn-cancel')?.addEventListener('click', async () => renderSettings(container));
+  // ---------- Appearance ----------
+  container.querySelectorAll('[data-theme-choice]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const theme = button.dataset.themeChoice;
+      window.dispatchEvent(new CustomEvent('groupify:set-theme', { detail: { theme } }));
+      container.querySelectorAll('[data-theme-choice]').forEach((other) => other.setAttribute('aria-checked', String(other === button)));
+    });
+  });
 
+  // ---------- Log out ----------
+  container.querySelector('#btn-sign-out')?.addEventListener('click', async () => {
+    if (!await requestConfirmation('Log out of Groupify on this device?')) return;
+    handleSignOut();
+  });
+
+  // ---------- Notifications (instant save) ----------
+  const notifStatus = container.querySelector('#gs-notif-status');
+  container.querySelectorAll('.notification-toggle').forEach((toggle) => {
+    toggle.addEventListener('change', async () => {
+      const nextPrefs = { ...prefs };
+      container.querySelectorAll('.notification-toggle').forEach((other) => { nextPrefs[other.dataset.key] = other.checked; });
+      notifStatus.textContent = 'Saving…';
+      notifStatus.dataset.tone = 'pending';
+      const { error } = await updateSettings(userId, { preferences: nextPrefs });
+      if (error) {
+        toggle.checked = !toggle.checked;
+        notifStatus.textContent = 'Not saved';
+        notifStatus.dataset.tone = 'error';
+        showToast(`Could not save: ${error.message}`, 'error');
+        return;
+      }
+      Object.assign(prefs, nextPrefs);
+      notifStatus.textContent = 'Saved';
+      notifStatus.dataset.tone = 'ok';
+    });
+  });
+
+  // ---------- Team ----------
+  const teamInput = container.querySelector('#workspace-name-input');
+  const teamSave = container.querySelector('#workspace-name-save');
+  teamInput?.addEventListener('input', () => {
+    if (teamSave) teamSave.disabled = !teamInput.value.trim() || teamInput.value.trim() === teamName;
+  });
+  container.querySelector('#workspace-name-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!isWorkspaceOwner) return;
+    const name = teamInput?.value.trim();
+    if (!name || !workspaceId || name === teamName) return;
+    const { data, error } = await updateWorkspace(workspaceId, { name });
+    if (error) return showToast(`Could not rename team: ${error.message}`, 'error');
+    AppState.workspace = { ...AppState.workspace, ...data, name };
+    window.dispatchEvent(new CustomEvent('groupify:profile-updated'));
+    showToast('Team name saved', 'success');
+    await rerender('team');
+  });
+
+  const roleSelect = container.querySelector('#invite-member-role');
+  roleSelect?.addEventListener('change', () => {
+    container.querySelector('#gs-role-help').textContent = `${ROLE_HELP[roleSelect.value]}.`;
+  });
+
+  const copyInviteLink = async (token) => {
+    const inviteUrl = `${window.location.origin}${window.location.pathname}#invite/${token}`;
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      showToast('Invite link copied — send it to your teammate', 'success');
+    } catch {
+      await requestInput('Copy this invite link and send it to your teammate:', inviteUrl);
+    }
+  };
+
+  container.querySelector('#invite-member-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!workspaceId) return showToast('No team is selected', 'error');
+    if (!isWorkspaceOwner) return showToast('Only the team owner can invite people.', 'error');
+    const emailInput = container.querySelector('#invite-member-email');
+    const submit = event.currentTarget.querySelector('button[type="submit"]');
+    if (submit.disabled) return;
+    submit.disabled = true;
+    let result;
+    try {
+      result = await createWorkspaceInvitation(workspaceId, emailInput.value, roleSelect.value, userId);
+    } catch (error) {
+      result = { error };
+    } finally {
+      submit.disabled = false;
+    }
+    if (result.error) return showToast(`Could not invite: ${result.error.message}`, 'error');
+    await copyInviteLink(result.data.token);
+    await rerender('team');
+  });
+
+  container.querySelectorAll('.copy-invitation').forEach((button) => {
+    button.addEventListener('click', () => button.dataset.token && copyInviteLink(button.dataset.token));
+  });
+
+  container.querySelectorAll('.member-role-select').forEach((select) => {
+    const previous = select.value;
+    select.addEventListener('change', async () => {
+      const { error } = await updateWorkspaceMember(select.dataset.memberId, { role: select.value });
+      if (error) {
+        select.value = previous;
+        return showToast(`Could not change role: ${error.message}`, 'error');
+      }
+      showToast(`Role changed to ${capitalize(select.value)}`, 'success');
+    });
+  });
+
+  container.querySelectorAll('.remove-member').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!await requestConfirmation(`Remove ${button.dataset.memberName} from ${teamName}? They will lose access to its projects.`)) return;
+      const { error } = await removeWorkspaceMember(button.dataset.memberId);
+      if (error) return showToast(`Could not remove member: ${error.message}`, 'error');
+      showToast('Member removed', 'success');
+      await rerender('team');
+    });
+  });
+
+  container.querySelectorAll('.revoke-invitation').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!await requestConfirmation('Cancel this invitation? The link will stop working.')) return;
+      const { error } = await removeWorkspaceInvitation(button.dataset.invitationId);
+      if (error) return showToast(`Could not cancel invitation: ${error.message}`, 'error');
+      showToast('Invitation cancelled', 'success');
+      await rerender('team');
+    });
+  });
+
+  if (requested === 'team' && isWorkspaceOwner) {
+    window.setTimeout(() => container.isConnected && container.querySelector('#invite-member-email')?.focus(), 150);
+  }
+
+  // ---------- Archive & backup ----------
   container.querySelectorAll('.restore-page').forEach((button) => {
     button.addEventListener('click', async () => {
       const { error: restoreError } = await restorePage(button.dataset.pageId);
-      if (restoreError) {
-        showToast('Could not restore page: ' + restoreError.message, 'error');
-        return;
-      }
+      if (restoreError) return showToast('Could not restore page: ' + restoreError.message, 'error');
       showToast('Page restored', 'success');
-      renderSettings(container);
+      window.dispatchEvent(new CustomEvent('motion:pages-changed'));
+      await rerender('data');
     });
   });
 
-  document.getElementById('settings-avatar-edit')?.addEventListener('click', async () => {
-    const avatarUrl = await requestInput('Paste a profile image URL:', profile.avatar_url || '');
-    if (avatarUrl === null) return;
-    if (avatarUrl && !/^https?:\/\//i.test(avatarUrl)) return showToast('Image URL must start with http:// or https://', 'error');
-    const { error: avatarError } = await updateUserProfile(userId, { avatar_url: avatarUrl || null });
-    if (avatarError) return showToast(`Could not update photo: ${avatarError.message}`, 'error');
-    AppState.profile = { ...AppState.profile, avatar_url: avatarUrl || null };
-    showToast('Profile photo updated', 'success');
-    await renderSettings(container);
-  });
-
-  document.getElementById('settings-export-backup')?.addEventListener('click', async () => {
+  container.querySelector('#settings-export-backup')?.addEventListener('click', async () => {
     if (!workspaceId) return showToast('No workspace is selected', 'error');
     const [{ data: pages, error: pagesError }, { data: tasks, error: tasksError }] = await Promise.all([
       getPages(workspaceId),
@@ -345,8 +546,8 @@ export async function renderSettings(container, route) {
     showToast('Workspace backup exported', 'success');
   });
 
-  document.getElementById('settings-import-backup')?.addEventListener('click', async () => container.querySelector('#settings-backup-input')?.click());
-  document.getElementById('settings-backup-input')?.addEventListener('change', async (event) => {
+  container.querySelector('#settings-import-backup')?.addEventListener('click', () => container.querySelector('#settings-backup-input')?.click());
+  container.querySelector('#settings-backup-input')?.addEventListener('change', async (event) => {
     const file = event.target.files?.[0];
     if (!file || !workspaceId) return;
     try {
@@ -394,7 +595,7 @@ export async function renderSettings(container, route) {
         importedTasks += 1;
       }
       showToast(`Imported ${importedPages} pages and ${importedTasks} tasks`, 'success');
-      await renderSettings(container);
+      await rerender('data');
     } catch (error) {
       showToast(`Could not import backup: ${error.message}`, 'error');
     } finally {
@@ -402,94 +603,11 @@ export async function renderSettings(container, route) {
     }
   });
 
-  container.querySelectorAll('[data-settings-tab]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const target = document.getElementById(`settings-${button.dataset.settingsTab}`);
-      target?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-  });
+}
 
-  if (route?.query?.get('section') === 'team') {
-    // Wait for layout (fonts, images) to settle before scrolling.
-    window.setTimeout(() => {
-      if (!container.isConnected) return;
-      document.getElementById('settings-workspace')?.scrollIntoView({ block: 'start' });
-      document.getElementById('invite-member-email')?.focus({ preventScroll: true });
-    }, 250);
-  }
-
-  container.querySelectorAll('.member-role-select').forEach((select) => {
-    select.addEventListener('change', async () => {
-      const { error } = await updateWorkspaceMember(select.dataset.memberId, { role: select.value });
-      showToast(error ? `Failed to update role: ${error.message}` : 'Member role updated', error ? 'error' : 'success');
-    });
-  });
-
-  document.getElementById('invite-member-form')?.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    if (!workspaceId) return showToast('No workspace is selected', 'error');
-    if (!isWorkspaceOwner) return showToast('Only the team owner can invite members.', 'error');
-    const emailInput = document.getElementById('invite-member-email');
-    const roleInput = document.getElementById('invite-member-role');
-    const submit = event.currentTarget.querySelector('button[type="submit"]') || event.currentTarget.querySelector('button');
-    if (submit.disabled) return;
-    submit.disabled = true;
-    submit.textContent = 'Creating invitation…';
-    let result;
-    try {
-      result = await createWorkspaceInvitation(workspaceId, emailInput.value, roleInput.value, userId);
-    } catch (error) {
-      return showToast(`Could not invite member: ${error.message}`, 'error');
-    } finally {
-      submit.disabled = false;
-      submit.textContent = 'Invite';
-    }
-    const { data: invitation, error } = result;
-    if (error) return showToast(`Could not invite member: ${error.message}`, 'error');
-    const inviteUrl = `${window.location.origin}${window.location.pathname}#invite/${invitation.token}`;
-    try {
-      await navigator.clipboard.writeText(inviteUrl);
-      showToast('Invitation saved and link copied', 'success');
-    } catch {
-      await requestInput('Copy this invitation link:', inviteUrl);
-      showToast('Invitation saved', 'success');
-    }
-    emailInput.value = '';
-  });
-
-  document.getElementById('workspace-name-form')?.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const name = document.getElementById('workspace-name-input')?.value.trim();
-    if (!name || !workspaceId) return;
-    const { data, error } = await updateWorkspace(workspaceId, { name });
-    if (error) return showToast(`Could not rename team: ${error.message}`, 'error');
-    AppState.workspace = { ...AppState.workspace, ...data, name };
-    showToast('Team name updated', 'success');
-    await renderSettings(container);
-  });
-
-  container.querySelectorAll('.remove-member').forEach((button) => {
-    button.addEventListener('click', async () => {
-      if (!await requestConfirmation('Remove this member from the workspace?')) return;
-      const { error } = await removeWorkspaceMember(button.dataset.memberId);
-      if (error) {
-        showToast(`Failed to remove member: ${error.message}`, 'error');
-        return;
-      }
-      showToast('Member removed', 'success');
-      await renderSettings(container);
-    });
-  });
-
-  container.querySelectorAll('.revoke-invitation').forEach((button) => {
-    button.addEventListener('click', async () => {
-      if (!await requestConfirmation('Revoke this invitation?')) return;
-      const { error } = await removeWorkspaceInvitation(button.dataset.invitationId);
-      if (error) return showToast(`Failed to revoke invitation: ${error.message}`, 'error');
-      showToast('Invitation revoked', 'success');
-      await renderSettings(container);
-    });
-  });
+function capitalize(text) {
+  const value = String(text || '');
+  return value ? value[0].toUpperCase() + value.slice(1) : value;
 }
 
 function timeSince(timestamp) {
@@ -510,22 +628,10 @@ function backupPageDepth(page, pages, seen = new Set()) {
 
 function renderNotificationRow(key, icon, label, description, checked) {
   return `
-    <div class="flex items-center justify-between p-5 hover:bg-surface-container-low/30 transition-colors ${
-      key !== 'email_notifications' ? 'border-t border-surface-container-low' : ''
-    }">
-      <div class="flex items-center gap-4">
-        <div class="w-10 h-10 rounded-lg bg-tertiary-container/30 flex items-center justify-center text-tertiary">
-          <span class="material-symbols-outlined">${icon}</span>
-        </div>
-        <div>
-          <p class="text-sm font-medium">${label}</p>
-          <p class="text-xs text-on-surface-variant">${description}</p>
-        </div>
-      </div>
-      <label class="relative inline-flex items-center cursor-pointer">
-        <input class="sr-only peer notification-toggle" type="checkbox" data-key="${key}" ${checked ? 'checked' : ''} />
-        <div class="w-10 h-5 bg-surface-container-highest rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
-      </label>
-    </div>
+    <label class="gs-row gs-switch-row">
+      <span class="gs-row-icon material-symbols-outlined">${icon}</span>
+      <span class="gs-row-main"><strong>${label}</strong><small>${description}</small></span>
+      <span class="gs-switch"><input class="notification-toggle" type="checkbox" role="switch" data-key="${key}" ${checked ? 'checked' : ''} /><span aria-hidden="true"></span></span>
+    </label>
   `;
 }

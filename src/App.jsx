@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, showToast } from './legacy/app.js';
+import { AppState, showToast, handleSignOut } from './legacy/app.js';
+import { requestConfirmation } from './lib/dialogs.js';
 import { getSession, onAuthStateChange, supabase } from './lib/supabase.js';
 import { isSupabaseConfigured } from './lib/config.js';
 import { escapeHtml } from './lib/sanitize.js';
@@ -32,7 +33,8 @@ import AIChatView from './components/AIChatView.jsx';
 import AIPageSidebar from './components/AIPageSidebar.jsx';
 import NotionAIFace from './components/NotionAIFace.jsx';
 import PresenceStack from './components/PresenceStack.jsx';
-import GroupifyLogo from './components/GroupifyLogo.jsx';
+import GroupifyLogo, { GroupifyLoader } from './components/GroupifyLogo.jsx';
+import { loaderHtml } from './lib/loader.js';
 import SharedPage from './components/SharedPage.jsx';
 import Landing from './landing/Landing.jsx';
 import Modal, { PromptDialog } from './components/Modal.jsx';
@@ -97,7 +99,7 @@ function LegacyRenderer({ renderer, routeKey, route }) {
 
     ref.current.innerHTML = `
       <div class="loading-overlay" style="position:relative; min-height:60vh;">
-        <div class="loading-spinner"></div>
+        ${loaderHtml()}
       </div>
     `;
 
@@ -559,6 +561,37 @@ export default function App() {
     query.addEventListener('change', onChange);
     return () => query.removeEventListener('change', onChange);
   }, []);
+  // Desktop: the sidebar can slide away to give the page more room (remembered per browser).
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('groupify.sidebarCollapsed') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('groupify.sidebarCollapsed', sidebarCollapsed ? '1' : '0'); } catch { /* storage unavailable */ }
+  }, [sidebarCollapsed]);
+  const sidebarShown = isDesktop ? !sidebarCollapsed : sidebarOpen;
+  const toggleSidebar = useCallback(() => {
+    if (window.matchMedia('(min-width: 1024px)').matches) setSidebarCollapsed((value) => !value);
+    else setSidebarOpen((value) => !value);
+  }, []);
+  const hideSidebar = () => (isDesktop ? setSidebarCollapsed(true) : setSidebarOpen(false));
+  // Ctrl/⌘ + \ shows or hides the sidebar.
+  useEffect(() => {
+    const onKey = (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === '\\') { event.preventDefault(); toggleSidebar(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [toggleSidebar]);
+  // Phones: swipe the open sidebar to the left to close it.
+  const swipeRef = useRef(null);
+  const onSidebarTouchStart = (event) => { swipeRef.current = { x: event.touches[0].clientX, y: event.touches[0].clientY }; };
+  const onSidebarTouchEnd = (event) => {
+    const start = swipeRef.current; swipeRef.current = null;
+    if (!start || isDesktop) return;
+    const dx = event.changedTouches[0].clientX - start.x;
+    const dy = event.changedTouches[0].clientY - start.y;
+    if (dx < -60 && Math.abs(dx) > Math.abs(dy) * 1.5) setSidebarOpen(false);
+  };
   useEffect(() => {
     if (!sidebarOpen) return;
     const closeOnEscape = (event) => {
@@ -651,6 +684,63 @@ export default function App() {
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  // Settings page (plain DOM) asks the app to switch theme or refresh the user's name/photo.
+  const [, setProfileVersion] = useState(0);
+  useEffect(() => {
+    const onSetTheme = (event) => {
+      const next = event.detail?.theme;
+      if (next !== 'light' && next !== 'dark') return;
+      setTheme(next);
+      if (AppState.user?.id) updateSettings(AppState.user.id, { theme: next }).catch(() => { });
+    };
+    const onProfileUpdated = () => setProfileVersion((value) => value + 1);
+    window.addEventListener('groupify:set-theme', onSetTheme);
+    window.addEventListener('groupify:profile-updated', onProfileUpdated);
+    return () => {
+      window.removeEventListener('groupify:set-theme', onSetTheme);
+      window.removeEventListener('groupify:profile-updated', onProfileUpdated);
+    };
+  }, []);
+
+  // Right-click (or the context-menu key) on the top-right picture opens a small menu.
+  const [avatarMenu, setAvatarMenu] = useState(null);
+  const avatarMenuRef = useRef(null);
+  const openAvatarMenu = (event) => {
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    setAvatarMenu({ top: Math.round(rect.bottom + 8), right: Math.max(8, Math.round(window.innerWidth - rect.right)) });
+  };
+  useEffect(() => {
+    if (!avatarMenu) return undefined;
+    avatarMenuRef.current?.querySelector('button')?.focus();
+    const close = () => setAvatarMenu(null);
+    const onPointer = (event) => { if (!avatarMenuRef.current?.contains(event.target)) close(); };
+    const onKey = (event) => {
+      if (event.key === 'Escape') { close(); document.getElementById('header-avatar')?.focus(); }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const items = [...(avatarMenuRef.current?.querySelectorAll('button') || [])];
+        const index = items.indexOf(document.activeElement);
+        items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+        event.preventDefault();
+      }
+    };
+    document.addEventListener('pointerdown', onPointer, true);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', close);
+    window.addEventListener('hashchange', close);
+    return () => {
+      document.removeEventListener('pointerdown', onPointer, true);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('hashchange', close);
+    };
+  }, [avatarMenu]);
+  const avatarMenuEdit = () => { setAvatarMenu(null); window.location.hash = 'settings?section=account'; };
+  const avatarMenuLogout = async () => {
+    setAvatarMenu(null);
+    if (await requestConfirmation('Log out of Groupify on this device?')) handleSignOut();
+  };
 
   useEffect(() => {
     const handleOffline = () => {
@@ -1109,7 +1199,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className={`flex h-screen overflow-hidden ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       {/* Mobile Sidebar Overlay */}
       <div
         className={`sidebar-overlay ${sidebarOpen ? 'active' : ''}`}
@@ -1119,17 +1209,20 @@ export default function App() {
       {/* Sidebar */}
       <aside
         id="sidebar"
-        inert={!sidebarOpen && !isDesktop}
+        inert={!sidebarShown}
+        onTouchStart={onSidebarTouchStart}
+        onTouchEnd={onSidebarTouchEnd}
         aria-label="Workspace navigation"
         className={`motion-sidebar h-screen w-64 flex-shrink-0 flex flex-col py-6 px-4 ${sidebarOpen ? 'sidebar-open' : ''}`}
       >
         <button
           type="button"
-          className="absolute top-3 right-3 flex items-center justify-center w-8 h-8 rounded-lg hover:bg-surface-container-high"
+          className="sidebar-hide-btn absolute top-3 right-3 flex items-center justify-center w-8 h-8 rounded-lg hover:bg-surface-container-high"
           aria-label="Close sidebar"
-          onClick={() => setSidebarOpen(false)}
+          title="Hide sidebar (Ctrl/⌘ + \)"
+          onClick={hideSidebar}
         >
-          <span className="material-symbols-outlined">close</span>
+          <span className="material-symbols-outlined">{isDesktop ? 'left_panel_close' : 'close'}</span>
         </button>
         <div className="sidebar-brand">
           <a href="#dashboard" className="sidebar-logo" aria-label="Groupify home"><GroupifyLogo height={24} color="#F5F7F8" /></a>
@@ -1357,9 +1450,10 @@ export default function App() {
             {/* Mobile hamburger */}
             <button
               className="flex items-center justify-center w-8 h-8 rounded-lg hover:bg-[#e8ebea] dark:hover:bg-stone-800 transition-colors"
-              onClick={() => setSidebarOpen(true)}
+              onClick={toggleSidebar}
               aria-label="Open sidebar"
-              aria-expanded={sidebarOpen}
+              title="Show sidebar (Ctrl/⌘ + \)"
+              aria-expanded={sidebarShown}
               aria-controls="sidebar"
             >
               <span className="material-symbols-outlined">menu</span>
@@ -1540,6 +1634,10 @@ export default function App() {
               id="header-avatar"
               className="w-8 h-8 rounded-full overflow-hidden bg-surface-container-highest cursor-pointer border border-outline-variant/10"
               onClick={() => (window.location.hash = 'profile')}
+              onContextMenu={openAvatarMenu}
+              title="Your profile (right-click for more)"
+              aria-haspopup="menu"
+              aria-expanded={Boolean(avatarMenu)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === ' ') {
                   event.preventDefault();
@@ -1560,6 +1658,21 @@ export default function App() {
           </div>
         </header>
 
+        {avatarMenu ? (
+          <div ref={avatarMenuRef} className="g-avatar-menu" role="menu" aria-label="Account" style={{ top: avatarMenu.top, right: avatarMenu.right }}>
+            <div className="g-avatar-menu-head">
+              <strong>{AppState.profile?.name || 'Your account'}</strong>
+              <span>{AppState.profile?.email || AppState.user?.email || ''}</span>
+            </div>
+            <button type="button" role="menuitem" onClick={avatarMenuEdit}>
+              <span className="material-symbols-outlined">edit</span>Edit profile
+            </button>
+            <button type="button" role="menuitem" className="is-danger" onClick={avatarMenuLogout}>
+              <span className="material-symbols-outlined">logout</span>Log out
+            </button>
+          </div>
+        ) : null}
+
         {isOffline ? (
           <div className="mx-4 mt-3 rounded-lg border border-error/30 bg-error-container/30 px-4 py-2 text-xs text-on-error-container flex items-center gap-2" role="status">
             <span className="material-symbols-outlined text-sm" aria-hidden="true">cloud_off</span>
@@ -1572,7 +1685,7 @@ export default function App() {
             {isBootstrapping ? (
               <div className="flex items-center justify-center h-[60vh]">
                 <div className="text-center">
-                  <div className="loading-spinner mx-auto mb-4"></div>
+                  <GroupifyLoader size={44} className="mx-auto mb-4" />
                   <p className="text-sm text-on-surface-variant">Loading Groupify...</p>
                 </div>
               </div>
