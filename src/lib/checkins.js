@@ -1,6 +1,7 @@
 // Weekly check-ins: three short answers per person, per project, per week
 // (weeks start on Monday). Table and rules: sql/checkins.sql.
 import { supabase } from './supabase.js';
+import { cachedRead, invalidateQueryCache } from './queries.js';
 
 export const MOODS = {
   3: { emoji: '😀', label: 'Going well' },
@@ -38,10 +39,14 @@ function isMissingTable(error) {
   return Boolean(error) && (error.code === '42P01' || error.code === 'PGRST205' || /project_checkins/.test(error.message || ''));
 }
 
-export async function getCheckins({ projectId, weeks }) {
+export function getCheckins({ projectId, weeks }) {
+  return cachedRead(`checkins:${projectId}:${[...weeks].sort().join(',')}`, () => loadCheckins({ projectId, weeks }));
+}
+
+async function loadCheckins({ projectId, weeks }) {
   const { data, error } = await supabase
     .from('project_checkins')
-    .select('id, project_id, user_id, week_start, mood, done, next, blockers, created_at, updated_at, user:users(id, name, email, avatar_url)')
+    .select('id, project_id, user_id, week_start, mood, done, next, blockers, blocker_resolved_at, blocker_resolved_by, blocker_resolution, created_at, updated_at, user:users!user_id(id, name, email, avatar_url), resolver:users!blocker_resolved_by(id, name, email)')
     .eq('project_id', projectId)
     .in('week_start', weeks)
     .order('updated_at', { ascending: false });
@@ -49,7 +54,11 @@ export async function getCheckins({ projectId, weeks }) {
   return { data: data || [], error };
 }
 
-export async function getMyCheckinsForWeek(workspaceId, userId, week = weekStart()) {
+export function getMyCheckinsForWeek(workspaceId, userId, week = weekStart()) {
+  return cachedRead(`checkins:mine:${workspaceId}:${userId}:${week}`, () => loadMyCheckins(workspaceId, userId, week));
+}
+
+async function loadMyCheckins(workspaceId, userId, week) {
   const { data, error } = await supabase
     .from('project_checkins')
     .select('project_id')
@@ -61,6 +70,7 @@ export async function getMyCheckinsForWeek(workspaceId, userId, week = weekStart
 }
 
 export async function saveCheckin({ workspaceId, projectId, userId, week = weekStart(), mood = null, done = '', next = '', blockers = '' }) {
+  invalidateQueryCache('checkins');
   const row = { workspace_id: workspaceId, project_id: projectId, user_id: userId, week_start: week, mood: mood || null, done, next, blockers };
   const { data, error } = await supabase
     .from('project_checkins')
@@ -71,6 +81,7 @@ export async function saveCheckin({ workspaceId, projectId, userId, week = weekS
 }
 
 export async function deleteCheckin(id) {
+  invalidateQueryCache('checkins');
   const { error } = await supabase.from('project_checkins').delete().eq('id', id);
   return { error };
 }
@@ -87,6 +98,24 @@ export function expectedPeople(projectTasks = [], teams = []) {
   return ids;
 }
 
+// Open blockers only: a blocker marked "solved" no longer needs attention.
 export function blockersOf(checkins = []) {
-  return checkins.filter((checkin) => checkin.blockers && checkin.blockers.trim());
+  return checkins.filter((checkin) => checkin.blockers && checkin.blockers.trim() && !checkin.blocker_resolved_at);
+}
+
+export function isBlockerSolved(checkin) {
+  return Boolean(checkin?.blockers && checkin.blocker_resolved_at);
+}
+
+// Mark a blocker solved (or reopen it). The database decides who may do this:
+// the person who reported it, a team leader in the project, or the team owner/admins.
+export async function setBlockerSolved(checkinId, solved = true, note = '') {
+  invalidateQueryCache('checkins');
+  const { error } = await supabase.rpc('set_checkin_blocker_solved', { target_checkin: checkinId, solved, note: String(note || '').slice(0, 500) });
+  return { error };
+}
+
+export function canSolveBlocker(checkin, { userId, role, teams = [] }) {
+  if (!checkin || !userId) return false;
+  return checkin.user_id === userId || role === 'owner' || role === 'admin' || teams.some((team) => team.leader_id === userId);
 }

@@ -1,5 +1,17 @@
-// Storage and management for Groupify AI chat sessions
-const STORAGE_KEY = 'motion_ai_chats_v1';
+// Storage and management for Groupify AI chat sessions.
+// Chats are kept per signed-in person, so someone else signing in on the same
+// browser never sees them.
+import { AppState } from '../legacy/app.js';
+
+const LEGACY_SHARED_KEY = 'motion_ai_chats_v1';
+
+function storageKey() {
+  return `groupify_ai_chats_v2:${AppState.user?.id || 'signed-out'}`;
+}
+
+// Older versions saved everyone's chats under one shared key. We can't tell whose
+// they were, so remove them instead of showing them to the wrong person.
+try { localStorage.removeItem(LEGACY_SHARED_KEY); } catch { /* storage unavailable */ }
 
 // No fake sample conversations: a new user starts with an empty, helpful screen.
 function getDefaultChats() {
@@ -8,10 +20,10 @@ function getDefaultChats() {
 
 export function getStoredChats() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey());
     if (!raw) {
       const defaults = getDefaultChats();
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(defaults));
+      localStorage.setItem(storageKey(), JSON.stringify(defaults));
       return defaults;
     }
     const parsed = JSON.parse(raw);
@@ -24,7 +36,7 @@ export function getStoredChats() {
 
 export function saveStoredChats(chats) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(chats));
+    localStorage.setItem(storageKey(), JSON.stringify(chats));
     window.dispatchEvent(new CustomEvent('motion:ai-chats-updated', { detail: chats }));
   } catch (err) {
     console.error('Failed to save AI chats to localStorage:', err);

@@ -92,13 +92,14 @@ export function buildReportFacts({ project, tasks, teams = [], members = [], com
   [...checkins].sort((a, b) => String(b.week_start).localeCompare(String(a.week_start))).forEach((checkin) => {
     if (!latestByPerson.has(checkin.user_id)) latestByPerson.set(checkin.user_id, checkin);
   });
-  const checkinBlockers = [...latestByPerson.values()].filter((checkin) => checkin.blockers && checkin.blockers.trim())
+  const solvedBlockers = [...latestByPerson.values()].filter((checkin) => checkin.blockers && checkin.blockers.trim() && checkin.blocker_resolved_at).length;
+  const checkinBlockers = [...latestByPerson.values()].filter((checkin) => checkin.blockers && checkin.blockers.trim() && !checkin.blocker_resolved_at)
     .map((checkin) => ({ name: checkin.user?.name || nameOf(checkin.user_id), text: checkin.blockers.trim().slice(0, 300) }));
   const moods = [3, 2, 1].map((value) => ({ emoji: MOODS[value].emoji, count: [...latestByPerson.values()].filter((checkin) => checkin.mood === value).length })).filter((mood) => mood.count);
 
   return {
     project: project.title || 'Untitled project',
-    checkins: { people: latestByPerson.size, blockers: checkinBlockers, moods },
+    checkins: { people: latestByPerson.size, blockers: checkinBlockers, solved: solvedBlockers, moods },
     days,
     from: dateKey(since),
     to: today,
@@ -127,8 +128,8 @@ function factsAsText(facts) {
     'OVERDUE:', list(facts.overdue, (t) => `- ${t.title}: ${t.lateDays} days late, owner ${t.owner}`),
     'NO OWNER:', list(facts.unassigned, (t) => `- ${t.title}`),
     'DUE IN THE NEXT 7 DAYS:', list(facts.upcoming, (t) => `- ${t.title}: due ${t.due}, owner ${t.owner}`),
-    `CHECK-INS: ${facts.checkins.people} people checked in${facts.checkins.moods.length ? ` · mood ${facts.checkins.moods.map((m) => `${m.emoji}${m.count}`).join(' ')}` : ''}`,
-    'BLOCKERS REPORTED IN CHECK-INS:', list(facts.checkins.blockers, (b) => `- ${b.name}: ${b.text}`),
+    `CHECK-INS: ${facts.checkins.people} people checked in${facts.checkins.moods.length ? ` · mood ${facts.checkins.moods.map((m) => `${m.emoji}${m.count}`).join(' ')}` : ''}${facts.checkins.solved ? ` · ${facts.checkins.solved} blocker(s) already solved` : ''}`,
+    'OPEN BLOCKERS REPORTED IN CHECK-INS (solved ones are not listed):', list(facts.checkins.blockers, (b) => `- ${b.name}: ${b.text}`),
     'CONTRIBUTIONS THIS PERIOD:', list(facts.contributions, (p) => `- ${p.name}: finished ${p.finished}, comments ${p.comments}, open tasks ${p.open}`)
   ].join('\n');
 }
@@ -183,7 +184,7 @@ export function renderReportHtml(facts, { summaryMarkdown = '', author = '' } = 
   parts.push(items(facts.upcoming, (t) => `${e(t.title)} — ${e(t.owner)} · due ${e(shortDate(t.due))}`, 'Nothing is due in the next 7 days.'));
 
   if (facts.checkins.people) {
-    parts.push(`<p><strong>Weekly check-ins:</strong> ${facts.checkins.people} ${facts.checkins.people === 1 ? 'person' : 'people'} checked in${facts.checkins.moods.length ? ` · mood ${facts.checkins.moods.map((m) => `${m.emoji} ${m.count}`).join(' · ')}` : ''}.</p>`);
+    parts.push(`<p><strong>Weekly check-ins:</strong> ${facts.checkins.people} ${facts.checkins.people === 1 ? 'person' : 'people'} checked in${facts.checkins.moods.length ? ` · mood ${facts.checkins.moods.map((m) => `${m.emoji} ${m.count}`).join(' · ')}` : ''}${facts.checkins.solved ? ` · ✓ ${facts.checkins.solved} blocker${facts.checkins.solved === 1 ? '' : 's'} solved` : ''}.</p>`);
   }
   parts.push('<h2>🙌 Contributions this period</h2>');
   parts.push(items(facts.contributions, (p) => `<strong>${e(p.name)}</strong> — ${p.finished} task${p.finished === 1 ? '' : 's'} finished · ${p.comments} comment${p.comments === 1 ? '' : 's'} · ${p.open} open`, 'No activity recorded in this period.'));

@@ -20,7 +20,8 @@ import {
   markAllNotificationsRead,
   acceptWorkspaceInvitation,
   createWorkspace,
-  getWorkspaceMembers
+  getWorkspaceMembers,
+  invalidateQueryCache
 } from './lib/queries.js';
 import { requestNewTask } from './lib/taskDetails.js';
 import { buildProjectIndex, listProjects } from './lib/projects.js';
@@ -100,14 +101,28 @@ function LegacyRenderer({ renderer, routeKey, route }) {
     if (!renderer || !ref.current) return undefined;
     const node = ref.current;
 
-    ref.current.innerHTML = `
-      <div class="loading-overlay" style="position:relative; min-height:60vh;">
-        ${loaderHtml()}
-      </div>
-    `;
+    // Keep the current screen visible while the next one loads (no flash).
+    // Only show the loader if loading is slow, or when there is nothing to show yet.
+    const isFirstPaint = !node.childElementCount || node.querySelector(':scope > .loading-overlay');
+    let slowTimer = null;
+    if (isFirstPaint) {
+      node.innerHTML = `
+        <div class="loading-overlay" style="position:relative; min-height:60vh;">
+          ${loaderHtml()}
+        </div>
+      `;
+    } else {
+      node.classList.add('is-switching');
+      slowTimer = window.setTimeout(() => node.classList.add('is-switching-slow'), 600);
+    }
+    const settle = () => {
+      window.clearTimeout(slowTimer);
+      node.classList.remove('is-switching', 'is-switching-slow');
+    };
 
     Promise.resolve()
       .then(() => renderer(ref.current, route))
+      .then(settle, (err) => { settle(); throw err; })
       .catch((err) => {
         console.error('Legacy render error:', err);
         ref.current.innerHTML = `
@@ -120,6 +135,7 @@ function LegacyRenderer({ renderer, routeKey, route }) {
       });
     // Tear down anything a page attached outside its container (e.g. the editor's floating toolbars).
     return () => {
+      window.clearTimeout(slowTimer);
       node.__renderToken = null;
       node.__notionEditor?.destroy();
       node.__notionEditor = null;
@@ -698,11 +714,15 @@ export default function App() {
       if (AppState.user?.id) updateSettings(AppState.user.id, { theme: next }).catch(() => { });
     };
     const onProfileUpdated = () => setProfileVersion((value) => value + 1);
+    // Something outside the page changed its data (e.g. Focus saved progress): redraw it.
+    const onRefreshPage = () => { if (parseHash().path !== 'editor') forceUpdate((value) => value + 1); };
     window.addEventListener('groupify:set-theme', onSetTheme);
     window.addEventListener('groupify:profile-updated', onProfileUpdated);
+    window.addEventListener('groupify:refresh-page', onRefreshPage);
     return () => {
       window.removeEventListener('groupify:set-theme', onSetTheme);
       window.removeEventListener('groupify:profile-updated', onProfileUpdated);
+      window.removeEventListener('groupify:refresh-page', onRefreshPage);
     };
   }, []);
 
@@ -723,6 +743,26 @@ export default function App() {
     try { localStorage.setItem(helpSeenKey, '1'); } catch { /* storage unavailable */ }
     if (openHelp) setHelpOpen(true);
   }, [helpSeenKey]);
+
+  // Team name menu in the sidebar: switch teams or create a new one.
+  const handleWorkspaceChange = useCallback((event) => {
+    const workspace = AppState.workspaces.find((item) => item.id === event.target.value);
+    if (!workspace) return;
+    AppState.workspace = workspace;
+    localStorage.setItem('motion-workspace-id', workspace.id);
+    forceUpdate((value) => value + 1);
+    window.location.assign('#dashboard');
+  }, []);
+  const [teamMenuOpen, setTeamMenuOpen] = useState(false);
+  const teamMenuRef = useRef(null);
+  useEffect(() => {
+    if (!teamMenuOpen) return undefined;
+    const onDown = (event) => { if (!teamMenuRef.current?.contains(event.target)) setTeamMenuOpen(false); };
+    const onKey = (event) => { if (event.key === 'Escape') setTeamMenuOpen(false); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [teamMenuOpen]);
 
   // Right-click (or the context-menu key) on the top-right picture opens a small menu.
   const [avatarMenu, setAvatarMenu] = useState(null);
@@ -806,6 +846,8 @@ export default function App() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'pages', ...(currentWorkspaceId ? { filter: `workspace_id=eq.${currentWorkspaceId}` } : {}) },
         (payload) => {
+          invalidateQueryCache('notifications');
+          invalidateQueryCache('pages');
           window.dispatchEvent(new CustomEvent('motion:page-changed', { detail: payload.new?.id || payload.old?.id || null }));
           if (parseHash().path !== 'editor') forceUpdate((value) => value + 1);
         }
@@ -814,6 +856,7 @@ export default function App() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'tasks', ...(currentWorkspaceId ? { filter: `workspace_id=eq.${currentWorkspaceId}` } : {}) },
         () => {
+          invalidateQueryCache('tasks');
           if (parseHash().path !== 'editor') forceUpdate((value) => value + 1);
         }
       )
@@ -1226,14 +1269,6 @@ export default function App() {
     return `${Math.floor(seconds / 86400)}d ago`;
   }
 
-  function handleWorkspaceChange(event) {
-    const workspace = AppState.workspaces.find((item) => item.id === event.target.value);
-    if (!workspace) return;
-    AppState.workspace = workspace;
-    localStorage.setItem('motion-workspace-id', workspace.id);
-    forceUpdate((value) => value + 1);
-    window.location.hash = 'dashboard';
-  }
 
   return (
     <div className={`flex h-screen overflow-hidden ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
@@ -1263,19 +1298,41 @@ export default function App() {
         </button>
         <div className="sidebar-brand">
           <a href="#dashboard" className="sidebar-logo" aria-label="Groupify home"><GroupifyLogo height={24} color="#F5F7F8" /></a>
-          {AppState.workspaces.length > 1 ? (
-            <select
-              id="workspace-switcher"
-              className="workspace-switcher sidebar-team"
-              value={AppState.workspace?.id || ''}
-              onChange={handleWorkspaceChange}
-              aria-label="Switch team"
+          <div className="sidebar-team-menu" ref={teamMenuRef}>
+            <button
+              type="button"
+              id="sidebar-workspace-name"
+              className="sidebar-team sidebar-team-button"
+              onClick={() => setTeamMenuOpen((value) => !value)}
+              aria-haspopup="menu"
+              aria-expanded={teamMenuOpen}
+              title={AppState.workspaces.length > 1 ? 'Switch team or create a new one' : 'Create another team'}
             >
-              {AppState.workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-            </select>
-          ) : (
-            <p className="sidebar-team" id="sidebar-workspace-name">{workspaceName}</p>
-          )}
+              <span className="truncate">{workspaceName}</span>
+              <span className="material-symbols-outlined" aria-hidden="true">unfold_more</span>
+            </button>
+            {teamMenuOpen ? (
+              <div className="sidebar-team-popover" role="menu" aria-label="Teams">
+                <p>Your teams</p>
+                {AppState.workspaces.map((workspace) => (
+                  <button
+                    key={workspace.id}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={workspace.id === AppState.workspace?.id}
+                    onClick={() => { setTeamMenuOpen(false); if (workspace.id !== AppState.workspace?.id) handleWorkspaceChange({ target: { value: workspace.id } }); }}
+                  >
+                    <span className="material-symbols-outlined" aria-hidden="true">{workspace.id === AppState.workspace?.id ? 'check' : 'group'}</span>
+                    <span className="truncate">{workspace.name}</span>
+                  </button>
+                ))}
+                <button type="button" role="menuitem" className="is-new" onClick={() => { setTeamMenuOpen(false); setNewWorkspaceModalOpen(true); }}>
+                  <span className="material-symbols-outlined" aria-hidden="true">add</span>
+                  <span>New team…</span>
+                </button>
+              </div>
+            ) : null}
+          </div>
           {onlineMemberCount > 1 ? <p className="sidebar-online"><span></span>{onlineMemberCount - 1} teammate{onlineMemberCount === 2 ? '' : 's'} online</p> : null}
         </div>
 
@@ -1456,11 +1513,12 @@ export default function App() {
             ) : (
               <p className="sidebar-hint">Meeting notes, ideas and drafts that aren’t part of a project live here.</p>
             )}
-            <div className="sidebar-more">
-              <a href="#notes" title="Every page in your team, in projects or not">All pages</a>
-              <a href="#kanban" title="Every task in your team, as a board, list, calendar or timeline">All tasks</a>
-              <a href="#database" title="Tasks and pages in a spreadsheet-style table">Table view</a>
-            </div>
+            <details className="sidebar-more-menu">
+              <summary title="All pages, all tasks and the table view"><span className="material-symbols-outlined" aria-hidden="true">more_horiz</span>More</summary>
+              <a href="#notes" title="Every page in your team, in projects or not"><span className="material-symbols-outlined" aria-hidden="true">description</span>All pages</a>
+              <a href="#kanban" title="Every task in your team, as a board, list, calendar or timeline"><span className="material-symbols-outlined" aria-hidden="true">view_kanban</span>All tasks</a>
+              <a href="#database" title="Tasks and pages in a spreadsheet-style table"><span className="material-symbols-outlined" aria-hidden="true">table_view</span>Table view</a>
+            </details>
           </section>
         </div>
 
@@ -1474,10 +1532,6 @@ export default function App() {
             <span className="material-symbols-outlined">settings</span>
             <span>Settings</span>
           </a>
-          <button type="button" className="sidebar-link" onClick={() => setNewWorkspaceModalOpen(true)} title="Start a separate team, for example for another course">
-            <span className="material-symbols-outlined">add_business</span>
-            <span>New team</span>
-          </button>
           <a href="#profile" className="sidebar-user" aria-label="Your profile">
             {avatarUrl ? <img src={avatarUrl} alt="" /> : <span className="sidebar-user-initials">{userInitials}</span>}
             <span className="sidebar-user-name">{AppState.profile?.name || AppState.user?.email || 'You'}</span>

@@ -137,12 +137,17 @@ export async function renderProject(container, route) {
   const overdue = openTasks.filter((task) => isOverdue(task));
   const unassigned = openTasks.filter((task) => !task.assignee_id);
   const recentPages = [...projectPages].sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at))).slice(0, 5);
-  const { data: comments } = await supabase
-    .from('comments')
-    .select('id, page_id, content, created_at, author:users(name)')
-    .in('page_id', [...ids])
-    .order('created_at', { ascending: false })
-    .limit(5);
+  // Load the discussion and this week's check-ins at the same time.
+  const thisWeek = weekStart();
+  const [{ data: comments }, { data: weekCheckins = [], unavailable: checkinsOff }] = await Promise.all([
+    supabase
+      .from('comments')
+      .select('id, page_id, content, created_at, author:users(name)')
+      .in('page_id', [...ids])
+      .order('created_at', { ascending: false })
+      .limit(5),
+    getCheckins({ projectId: project.id, weeks: [thisWeek] })
+  ]);
   const pageTitle = (id) => (id === project.id ? 'Project plan' : pages.find((page) => page.id === id)?.title || 'Untitled');
 
   const taskRow = (task) => `
@@ -153,8 +158,6 @@ export async function renderProject(container, route) {
       <span class="project-task-meta ${isOverdue(task) ? 'is-overdue' : ''}">${task.due_date ? (isOverdue(task) ? 'Overdue · ' : 'Due ') + escapeHtml(task.due_date) : ''}</span>
     </li>`;
 
-  const thisWeek = weekStart();
-  const { data: weekCheckins = [], unavailable: checkinsOff } = await getCheckins({ projectId: project.id, weeks: [thisWeek] });
   const checkinPeople = expectedPeople(tasks, teams);
   const iCheckedIn = weekCheckins.some((checkin) => checkin.user_id === AppState.user?.id);
   const weekBlockers = blockersOf(weekCheckins);

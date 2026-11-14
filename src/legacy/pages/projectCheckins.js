@@ -4,10 +4,13 @@
 // ============================================
 import { AppState, showToast } from '../app.js';
 import { supabase } from '../../lib/supabase.js';
+import { invalidateQueryCache } from '../../lib/queries.js';
 import { escapeHtml } from '../../lib/sanitize.js';
-import { requestConfirmation } from '../../lib/dialogs.js';
+import { requestConfirmation, requestInput } from '../../lib/dialogs.js';
+import { workspaceRole } from '../../lib/teams.js';
 import {
-  MOODS, weekStart, shiftWeek, weekLabel, getCheckins, saveCheckin, deleteCheckin, expectedPeople, blockersOf
+  MOODS, weekStart, shiftWeek, weekLabel, getCheckins, saveCheckin, deleteCheckin, expectedPeople, blockersOf,
+  isBlockerSolved, setBlockerSolved, canSolveBlocker
 } from '../../lib/checkins.js';
 
 function personName(user, fallback = 'Teammate') {
@@ -56,11 +59,13 @@ export async function renderCheckinsTab(section, ctx) {
   const moodCounts = [3, 2, 1].map((value) => ({ value, count: checkins.filter((checkin) => checkin.mood === value).length })).filter((item) => item.count);
   const editing = isCurrent && (!mine || section.__editing);
 
+  const myRole = workspaceRole(members, me, AppState.workspace);
+  const canSolve = (checkin) => isCurrent && canSolveBlocker(checkin, { userId: me, role: myRole, teams });
   const answerCard = (checkin, own = false) => {
     const user = checkin.user || memberById.get(checkin.user_id)?.user;
     const mood = MOODS[checkin.mood];
     return `
-      <article class="checkin-card ${checkin.blockers ? 'has-blocker' : ''}">
+      <article class="checkin-card ${checkin.blockers && !isBlockerSolved(checkin) ? 'has-blocker' : ''}">
         <header>
           ${face(user)}
           <div class="checkin-card-who"><strong>${escapeHtml(personName(user))}${own ? ' <em>(you)</em>' : ''}</strong><small>${escapeHtml(new Date(checkin.updated_at).toLocaleString(undefined, { weekday: 'short', hour: '2-digit', minute: '2-digit' }))}</small></div>
@@ -69,7 +74,9 @@ export async function renderCheckinsTab(section, ctx) {
         </header>
         ${checkin.done ? `<div class="checkin-answer"><span>Done</span><p>${paragraph(checkin.done)}</p></div>` : ''}
         ${checkin.next ? `<div class="checkin-answer"><span>Next</span><p>${paragraph(checkin.next)}</p></div>` : ''}
-        ${checkin.blockers ? `<div class="checkin-answer is-blocker"><span>🚧 Blocked by</span><p>${paragraph(checkin.blockers)}</p></div>` : ''}
+        ${checkin.blockers ? (isBlockerSolved(checkin)
+          ? `<div class="checkin-answer is-solved"><span>✓ Blocker solved${checkin.resolver ? ` by ${escapeHtml(personName(checkin.resolver))}` : ''} · ${escapeHtml(new Date(checkin.blocker_resolved_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }))}</span><p><s>${paragraph(checkin.blockers)}</s></p>${checkin.blocker_resolution ? `<p class="checkin-solution">${paragraph(checkin.blocker_resolution)}</p>` : ''}${canSolve(checkin) ? `<button type="button" class="checkin-solve-btn is-reopen" data-reopen="${escapeHtml(checkin.id)}">Reopen</button>` : ''}</div>`
+          : `<div class="checkin-answer is-blocker"><span>🚧 Blocked by</span><p>${paragraph(checkin.blockers)}</p>${canSolve(checkin) ? `<button type="button" class="checkin-solve-btn" data-solve="${escapeHtml(checkin.id)}"><span class="material-symbols-outlined">check_circle</span>Mark solved</button>` : ''}</div>`) : ''}
       </article>`;
   };
 
@@ -113,6 +120,21 @@ export async function renderCheckinsTab(section, ctx) {
     ${waiting.length && isCurrent ? `<div class="checkin-waiting"><span>Still to check in:</span>${waiting.map((id) => `<span class="checkin-chip">${face(memberById.get(id)?.user, 20)}${escapeHtml(personName(memberById.get(id)?.user, 'Former member'))}${id === me ? ' (you)' : ''}</span>`).join('')}</div>` : ''}`;
 
   const rerender = () => renderCheckinsTab(section, ctx);
+  section.querySelectorAll('[data-solve]').forEach((button) => button.addEventListener('click', async () => {
+    const note = await requestInput('How was it solved? (optional — e.g. “Lina sent the list in a comment”)', '');
+    if (note === null) return;
+    button.disabled = true;
+    const { error: solveError } = await setBlockerSolved(button.dataset.solve, true, note);
+    if (solveError) { button.disabled = false; showToast(`Could not mark it solved: ${solveError.message}`, 'error'); return; }
+    showToast('Blocker marked as solved ✓', 'success');
+    rerender();
+  }));
+  section.querySelectorAll('[data-reopen]').forEach((button) => button.addEventListener('click', async () => {
+    const { error: reopenError } = await setBlockerSolved(button.dataset.reopen, false);
+    if (reopenError) { showToast(`Could not reopen it: ${reopenError.message}`, 'error'); return; }
+    showToast('Blocker reopened', 'success');
+    rerender();
+  }));
   section.querySelectorAll('[data-week]').forEach((button) => button.addEventListener('click', () => {
     section.__week = shiftWeek(week, Number(button.dataset.week));
     section.__editing = false;
@@ -155,6 +177,7 @@ export async function renderCheckinsTab(section, ctx) {
     const channel = supabase.channel(`checkins-${project.id}-${crypto.randomUUID()}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'project_checkins', filter: `project_id=eq.${project.id}` }, () => {
         if (!section.isConnected) { supabase.removeChannel(channel); section.__live = null; return; }
+        invalidateQueryCache('checkins');
         if (!section.__editing && !section.querySelector('[data-checkin-form] textarea:focus')) rerender();
       })
       .subscribe();

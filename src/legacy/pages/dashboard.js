@@ -2,8 +2,7 @@
 // MOTION — Home: my tasks, projects, team activity, getting started
 // ============================================
 import { AppState, setBreadcrumb, showToast } from '../app.js';
-import { getPages, getTasks, getWorkspaceMembers, getNotifications, toggleTask, createTask, timeAgo } from '../../lib/queries.js';
-import { supabase } from '../../lib/supabase.js';
+import { getPages, getTasks, getWorkspaceMembers, getNotifications, getCommentCount, toggleTask, createTask, timeAgo } from '../../lib/queries.js';
 import { escapeHtml } from '../../lib/sanitize.js';
 import { listProjects, buildProjectIndex, tasksForProject, projectProgress, isOverdue, sortTasksForFocus, PROJECT_TEMPLATES } from '../../lib/projects.js';
 import { startNewProject } from '../../lib/projectActions.js';
@@ -30,7 +29,7 @@ export async function renderDashboard(container) {
     getTasks({ workspaceId }),
     workspaceId ? getWorkspaceMembers(workspaceId) : Promise.resolve({ data: [] }),
     getNotifications(8),
-    supabase.from('comments').select('id', { count: 'exact', head: true }),
+    getCommentCount(),
     workspaceId ? getMyCheckinsForWeek(workspaceId, me) : Promise.resolve({ data: [] }),
     workspaceId ? getWorkspaceTeams(workspaceId) : Promise.resolve({ data: [] })
   ]);
@@ -116,13 +115,24 @@ export async function renderDashboard(container) {
       <p>${escapeHtml(template.description)}</p>
     </button>`).join('');
 
+  // One place for what needs you today (instead of separate banners).
+  const dueSoonOnly = dueSoonMine.filter((task) => !isOverdue(task));
+  const listTitles = (items) => `${items.slice(0, 2).map((task) => `“${escapeHtml(task.title)}”`).join(', ')}${items.length > 2 ? ` and ${items.length - 2} more` : ''}`;
+  const attentionRows = [
+    overdueMine.length && `<li class="is-bad"><span class="material-symbols-outlined">schedule</span><a href="#kanban?assignee=mine"><strong>${overdueMine.length} overdue</strong> ${listTitles(overdueMine)}</a></li>`,
+    dueSoonOnly.length && `<li class="is-warn"><span class="material-symbols-outlined">alarm</span><a href="#kanban?assignee=mine"><strong>Due ${dueSoonOnly.every((task) => task.due_date === todayStr) ? 'today' : 'soon'}</strong> ${listTitles(dueSoonOnly)}</a></li>`,
+    checkinsDue.length && `<li><span class="material-symbols-outlined">event_note</span><span><strong>Weekly check-in</strong> ${checkinsDue.map((project) => `<a href="#project/${escapeHtml(project.id)}/checkins">${escapeHtml(project.icon || '📁')} ${escapeHtml(project.title || 'Untitled project')}</a>`).join(', ')}</span></li>`
+  ].filter(Boolean);
+  const nextStep = steps.find((step) => !step.done);
+  const compactChecklist = stepsDone >= 2;
+
   container.innerHTML = `
     <div class="home">
       <header class="home-header">
         <div>
           <p class="home-eyebrow">${teamName}</p>
           <h1>Hi ${firstName} 👋</h1>
-          <p class="home-summary">${overdueMine.length ? `<strong class="is-overdue">${overdueMine.length} of your tasks ${overdueMine.length === 1 ? 'is' : 'are'} overdue.</strong> ` : ''}${myTasks.length ? `You have ${myTasks.length} open task${myTasks.length === 1 ? '' : 's'}${projects.length ? ` across ${projects.length} project${projects.length === 1 ? '' : 's'}` : ''}.` : projects.length ? 'Nothing assigned to you right now.' : 'Groupify helps your team plan projects, split them into tasks, and finish them together.'}</p>
+          <p class="home-summary">${myTasks.length ? `You have ${myTasks.length} open task${myTasks.length === 1 ? '' : 's'}${projects.length ? ` across ${projects.length} project${projects.length === 1 ? '' : 's'}` : ''}.` : projects.length ? 'Nothing assigned to you right now.' : 'Groupify helps your team plan projects, split them into tasks, and finish them together.'}</p>
         </div>
         <div class="home-actions">
           <button type="button" class="project-btn primary" data-new-project><span class="material-symbols-outlined">create_new_folder</span> New project</button>
@@ -131,9 +141,10 @@ export async function renderDashboard(container) {
         </div>
       </header>
 
-      ${dueSoonMine.length ? `<a class="home-due-alert" href="#kanban?assignee=mine"><span class="material-symbols-outlined">alarm</span><span><strong>${dueSoonMine.length === 1 ? 'One of your tasks is' : `${dueSoonMine.length} of your tasks are`} due ${dueSoonMine.every((task) => task.due_date === todayStr) ? 'today' : 'by tomorrow'}:</strong> ${dueSoonMine.slice(0, 3).map((task) => escapeHtml(task.title)).join(', ')}${dueSoonMine.length > 3 ? '…' : ''}</span></a>` : ''}
-
-      ${checkinsDue.length ? `<div class="home-checkin-alert"><span class="material-symbols-outlined">event_note</span><span><strong>Weekly check-in:</strong> tell your team how the week went in ${checkinsDue.map((project) => `<a href="#project/${escapeHtml(project.id)}/checkins">${escapeHtml(project.icon || '📁')} ${escapeHtml(project.title || 'Untitled project')}</a>`).join(', ')}.</span></div>` : ''}
+      ${attentionRows.length ? `<section class="home-attention" aria-label="Needs your attention">
+        <h2><span class="material-symbols-outlined" aria-hidden="true">priority_high</span>Needs your attention</h2>
+        <ul>${attentionRows.join('')}</ul>
+      </section>` : ''}
 
       ${projects.length ? `<section class="home-digest" aria-label="This week">
         <h2>This week in ${teamName}</h2>
@@ -151,7 +162,14 @@ export async function renderDashboard(container) {
         <div class="home-templates">${templatesHtml}</div>
       </section>`}
 
-      ${showChecklist ? `<section class="home-checklist" aria-label="Getting started">
+      ${showChecklist && compactChecklist ? `<section class="home-checklist-slim" aria-label="Getting started">
+        <span class="material-symbols-outlined" aria-hidden="true">rocket_launch</span>
+        <span><strong>Get your team going</strong> · ${stepsDone} of ${steps.length} done${nextStep ? ` · Next: ${nextStep.label}` : ''}</span>
+        ${nextStep ? (nextStep.action ? `<button type="button" class="project-link" data-step-action="${nextStep.action}">Do it →</button>` : nextStep.href ? `<a class="project-link" href="${nextStep.href}">Do it →</a>` : '') : ''}
+        <button type="button" class="home-dismiss" data-dismiss aria-label="Hide getting started">Hide</button>
+      </section>` : ''}
+
+      ${showChecklist && !compactChecklist ? `<section class="home-checklist" aria-label="Getting started">
         <div class="home-checklist-head"><div><h2>Get your team going</h2><p>${stepsDone} of ${steps.length} done</p></div><button type="button" class="home-dismiss" data-dismiss aria-label="Hide getting started">Hide</button></div>
         <div class="project-progress-track"><span style="width:${Math.round((stepsDone / steps.length) * 100)}%"></span></div>
         <ol>${steps.map((step) => `<li class="${step.done ? 'is-done' : ''}">
@@ -163,8 +181,8 @@ export async function renderDashboard(container) {
 
       <div class="home-grid">
         <section class="project-section">
-          <div class="project-section-head"><h2>My tasks</h2><a class="project-link" href="#kanban?assignee=mine">See all →</a></div>
-          ${myTasks.length ? `<ul class="project-task-list">${myTasks.slice(0, 8).map(taskRow).join('')}</ul>` : `<div class="project-hint"><span class="material-symbols-outlined">task_alt</span><div><strong>Nothing assigned to you</strong><p>${unassigned.length ? `${unassigned.length} task${unassigned.length === 1 ? ' has' : 's have'} no owner yet — <a href="#kanban">pick one up</a>.` : 'Tasks assigned to you from any project appear here.'}</p></div></div>`}
+          <div class="project-section-head"><h2>My tasks</h2><a class="project-link" href="#kanban?assignee=mine">${myTasks.length > 5 ? `See all ${myTasks.length} →` : 'See all →'}</a></div>
+          ${myTasks.length ? `<ul class="project-task-list">${myTasks.slice(0, 5).map(taskRow).join('')}</ul>` : `<div class="project-hint"><span class="material-symbols-outlined">task_alt</span><div><strong>Nothing assigned to you</strong><p>${unassigned.length ? `${unassigned.length} task${unassigned.length === 1 ? ' has' : 's have'} no owner yet — <a href="#kanban">pick one up</a>.` : 'Tasks assigned to you from any project appear here.'}</p></div></div>`}
         </section>
 
         <div class="project-side">
@@ -189,7 +207,7 @@ export async function renderDashboard(container) {
   container.querySelectorAll('[data-step-action="new-project"]').forEach((button) => button.addEventListener('click', () => startNewProject()));
   container.querySelector('[data-dismiss]')?.addEventListener('click', () => {
     try { localStorage.setItem(checklistKey(), '1'); } catch { /* private mode */ }
-    container.querySelector('.home-checklist')?.remove();
+    container.querySelector('.home-checklist, .home-checklist-slim')?.remove();
   });
   container.querySelector('[data-focus-start]')?.addEventListener('click', () => pickAndFocus());
   container.querySelector('[data-new-task]')?.addEventListener('click', async () => {

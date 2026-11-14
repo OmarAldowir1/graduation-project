@@ -10,30 +10,49 @@ import { getWorkspaceTeams, taskPermissions, taskProgress, workspaceRole, TEAM_C
 
 let closeActiveTask = null;
 
-export function openTaskDetails(task, members = [], onSaved = () => {}, { teams: knownTeams = null } = {}) {
+// Always open the newest version of the task: the list on screen may be a few
+// seconds old (e.g. right after a Focus session saved progress), and saving an
+// old copy would undo someone's changes.
+export async function openTaskDetails(task, members = [], onSaved = () => {}, options = {}) {
+  let latest = task;
+  if (task?.id) {
+    const { data } = await supabase.from('tasks').select('*, assignee:users!assignee_id(id, name, avatar_url)').eq('id', task.id).maybeSingle();
+    if (data) latest = data;
+  }
+  return renderTaskDetails(latest, members, onSaved, options);
+}
+
+function renderTaskDetails(task, members = [], onSaved = () => {}, { teams: knownTeams = null } = {}) {
   closeActiveTask?.();
   const details = task.details || {};
   const checklist = Array.isArray(details.checklist) ? details.checklist.map(item => ({ id: item.id || crypto.randomUUID(), text: String(item.text || ''), done: Boolean(item.done) })) : [];
   const backdrop = document.createElement('div');
   backdrop.className = 'task-detail-backdrop';
   backdrop.innerHTML = `<section class="task-detail-panel" role="dialog" aria-modal="true" aria-label="Task details">
-    <header><div><small>TASK DETAILS</small><h2>Instructions &amp; progress</h2></div><div class="task-detail-head-actions">${task.status !== 'done' ? '<button type="button" class="task-focus-btn" data-focus title="Work on this task with a timer, no distractions">🎯 Focus</button>' : ''}<button type="button" data-close aria-label="Close task details">×</button></div></header>
+    <header><div><small>TASK</small><h2>Details &amp; progress</h2></div><div class="task-detail-head-actions">${task.status !== 'done' ? '<button type="button" class="task-focus-btn" data-focus title="Work on this task with a timer, no distractions">🎯 Focus</button>' : ''}<button type="button" data-close aria-label="Close task details">×</button></div></header>
     <p class="task-detail-lock" data-lock hidden></p>
     <form class="task-detail-form">
       <label>Title<input name="title" value="${esc(task.title || '')}" required maxlength="500" /></label>
-      <label>Description<textarea name="description" rows="5" placeholder="Explain what needs to be done, the expected result, and any important instructions.">${esc(details.description || '')}</textarea></label>
-      <div class="task-detail-fields">
+      <div class="task-detail-fields task-detail-essentials">
         <label>Status<select name="status">${['todo','in_progress','done'].map(value => `<option value="${value}" ${task.status === value ? 'selected' : ''}>${{todo:'To do',in_progress:'In progress',done:'Done'}[value]}</option>`).join('')}</select></label>
-        <label>Priority<select name="priority">${['low','medium','high','urgent'].map(value => `<option ${task.priority === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
-        <label>Due date<input name="due_date" type="date" value="${esc(task.due_date || '')}" /></label>
-        <label>Team<select name="team_id" data-team-select><option value="">No team</option>${task.team_id ? `<option value="${esc(task.team_id)}" selected>Loading…</option>` : ''}</select></label>
-        <label class="task-detail-progress">Progress <output data-progress-value>${taskProgress(task)}%</output><input name="progress" type="range" min="0" max="100" step="5" value="${taskProgress(task)}" /></label>
         <label>Assignee<select name="assignee_id"><option value="">Unassigned</option>${members.map(member => `<option value="${esc(member.user_id)}" ${task.assignee_id === member.user_id ? 'selected' : ''}>${esc(member.user?.name || member.user?.email || 'Member')}</option>`).join('')}${task.assignee_id && !members.some(member => member.user_id === task.assignee_id) ? `<option value="${esc(task.assignee_id)}" selected>${esc(task.assignee?.name || 'Current assignee')}</option>` : ''}</select></label>
+        <label>Due date<input name="due_date" type="date" value="${esc(task.due_date || '')}" /></label>
+        <label class="task-detail-progress">Progress <output data-progress-value>${taskProgress(task)}%</output><input name="progress" type="range" min="0" max="100" step="5" value="${taskProgress(task)}" /></label>
       </div>
-      <div data-custom-fields></div>
-      <label>Tags<input name="tags" value="${esc((task.tags || []).join(', '))}" placeholder="Separate tags with commas" /></label>
-      <section class="task-detail-checklist"><h3>Checklist <small data-progress></small></h3><div data-checklist></div><button type="button" data-add-step>+ Add a step</button></section>
-      <label>Reference links<textarea name="links" rows="2" placeholder="Paste one https:// URL per line">${esc((Array.isArray(details.links) ? details.links : []).join('\n'))}</textarea></label>
+      <label>Description<textarea name="description" rows="4" placeholder="What needs to be done, and what does “done” look like?">${esc(details.description || '')}</textarea></label>
+      <details class="task-detail-more" data-more>
+        <summary><span class="material-symbols-outlined" aria-hidden="true">expand_more</span><strong>More details</strong><small data-more-summary></small></summary>
+        <div class="task-detail-more-body">
+          <div class="task-detail-fields">
+            <label>Priority<select name="priority">${['low','medium','high','urgent'].map(value => `<option value="${value}" ${task.priority === value ? 'selected' : ''}>${value[0].toUpperCase() + value.slice(1)}</option>`).join('')}</select></label>
+            <label>Team<select name="team_id" data-team-select><option value="">No team</option>${task.team_id ? `<option value="${esc(task.team_id)}" selected>Loading…</option>` : ''}</select></label>
+          </div>
+          <div data-custom-fields></div>
+          <section class="task-detail-checklist"><h3>Checklist <small data-progress></small></h3><div data-checklist></div><button type="button" data-add-step>+ Add a step</button></section>
+          <label>Tags<input name="tags" value="${esc((task.tags || []).join(', '))}" placeholder="Separate tags with commas" /></label>
+          <label>Reference links<textarea name="links" rows="2" placeholder="Paste one https:// URL per line">${esc((Array.isArray(details.links) ? details.links : []).join('\n'))}</textarea></label>
+        </div>
+      </details>
       <div class="task-detail-references">${(Array.isArray(details.links) ? details.links : []).filter(url => /^https?:\/\//i.test(url)).map(url => `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`).join('')}${task.page_id ? `<a href="#editor/${esc(task.page_id)}" data-related-page>Open related page →</a>` : ''}</div>
       <p data-save-status role="status"></p><button type="submit" class="modal-btn-primary">Save task</button>
     </form>
@@ -58,6 +77,30 @@ export function openTaskDetails(task, members = [], onSaved = () => {}, { teams:
     }
   });
   window.addEventListener('hashchange', close);
+  // "More details": remember if the person likes it open, and summarise what's inside
+  // so nothing important is hidden.
+  const more = backdrop.querySelector('[data-more]');
+  try { more.open = localStorage.getItem('groupify.taskMoreOpen') === '1'; } catch { /* storage unavailable */ }
+  more.addEventListener('toggle', () => { try { localStorage.setItem('groupify.taskMoreOpen', more.open ? '1' : '0'); } catch { /* storage unavailable */ } });
+  const updateMoreSummary = () => {
+    const form = backdrop.querySelector('.task-detail-form');
+    const teamSelect = form.elements.team_id;
+    const teamName = teamSelect?.value ? teamSelect.selectedOptions[0]?.textContent.replace(/^●\s*/, '') : '';
+    const tags = form.elements.tags.value.split(',').map(tag => tag.trim()).filter(Boolean);
+    const links = form.elements.links.value.split('\n').map(value => value.trim()).filter(Boolean);
+    const steps = checklist.filter(item => item.text.trim());
+    const bits = [
+      form.elements.priority.value !== 'medium' && `${form.elements.priority.value[0].toUpperCase()}${form.elements.priority.value.slice(1)} priority`,
+      teamName && teamName !== 'Loading…' && teamName,
+      steps.length && `${steps.filter(item => item.done).length}/${steps.length} steps`,
+      tags.length && `${tags.length} tag${tags.length === 1 ? '' : 's'}`,
+      links.length && `${links.length} link${links.length === 1 ? '' : 's'}`
+    ].filter(Boolean);
+    backdrop.querySelector('[data-more-summary]').textContent = bits.length ? bits.join(' · ') : 'Priority, team, checklist, tags, links';
+  };
+  more.addEventListener('input', updateMoreSummary);
+  more.addEventListener('change', updateMoreSummary);
+
   function renderChecklist() {
     backdrop.querySelector('[data-progress]').textContent = `${checklist.filter(item => item.done).length}/${checklist.length}`;
     backdrop.querySelector('[data-checklist]').innerHTML = checklist.map(item => `<div class="task-detail-step" data-step="${esc(item.id)}"><input type="checkbox" ${item.done ? 'checked' : ''} aria-label="Complete checklist step" /><input type="text" value="${esc(item.text)}" aria-label="Checklist step" placeholder="Describe this step" /><button type="button" data-remove aria-label="Remove checklist step">×</button></div>`).join('');
@@ -100,6 +143,8 @@ export function openTaskDetails(task, members = [], onSaved = () => {}, { teams:
     permissions = taskPermissions(task, team, workspaceRole(members, me, AppState.workspace), me);
     const lock = backdrop.querySelector('[data-lock]');
     const leaderName = team?.leader?.name || team?.leader?.email || 'the team leader';
+    // Focus is for doing your own work; hide it on tasks you can't change.
+    if (permissions.readOnly) backdrop.querySelector('[data-focus]')?.remove();
     if (permissions.readOnly || permissions.progressOnly) {
       lock.hidden = false;
       lock.innerHTML = permissions.readOnly
@@ -123,6 +168,7 @@ export function openTaskDetails(task, members = [], onSaved = () => {}, { teams:
     const current = teamsForTask.find(team => team.id === task.team_id);
     if (current) select.style.color = TEAM_COLORS[current.color] || '';
     applyPermissions();
+    updateMoreSummary();
   });
 
   form.addEventListener('submit', async event => {
@@ -195,7 +241,7 @@ export function openTaskDetails(task, members = [], onSaved = () => {}, { teams:
     const slot = backdrop.querySelector('[data-custom-fields]');
     if (slot && fields.length) slot.outerHTML = renderFieldInputs(fields, task.fields || {});
   });
-  document.body.append(backdrop); renderChecklist(); form.elements.title.focus(); loadComments();
+  document.body.append(backdrop); renderChecklist(); updateMoreSummary(); form.elements.title.focus(); loadComments();
 }
 
 // One form for a new task (instead of a prompt per field). Resolves to createTask options or null.

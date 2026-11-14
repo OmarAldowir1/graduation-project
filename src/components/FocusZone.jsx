@@ -157,6 +157,7 @@ export default function FocusZone() {
     if (error) { showToast(`Could not save progress: ${error.message}`, 'error'); return; }
     showToast(markDone || value >= 100 ? `“${task.title}” is done 🎉` : `Progress saved: ${value}%`, 'success');
     window.dispatchEvent(new CustomEvent('motion:pages-changed'));
+    window.dispatchEvent(new CustomEvent('groupify:refresh-page'));
     if (again && value < 100) startFocus({ task, minutes: session?.minutes || 25 });
     else endFocus();
   };

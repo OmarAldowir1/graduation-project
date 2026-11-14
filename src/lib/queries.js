@@ -6,6 +6,48 @@ import { supabase } from './supabase.js';
 import { saveWorkspaceInvitation } from './workspaceInvitations.js';
 
 // ============================================
+// SHORT-LIVED READ CACHE
+// ============================================
+// Most screens load the same pages, tasks and members. Keeping them for a few
+// seconds makes moving between screens instant. Every write in this file clears
+// the matching cache, other changes clear it through "motion:pages-changed", and
+// coming back to the tab clears it too, so nothing stays out of date for long.
+const CACHE_TTL_MS = 20000;
+const readCache = new Map(); // key -> { at, promise }
+
+export function cachedRead(key, load) {
+  const hit = readCache.get(key);
+  if (hit && Date.now() - hit.at < CACHE_TTL_MS) {
+    return hit.promise.then((result) => ({ ...result, data: Array.isArray(result.data) ? result.data.slice() : result.data }));
+  }
+  const promise = load().then((result) => {
+    if (result?.error) readCache.delete(key);
+    return result;
+  }, (error) => { readCache.delete(key); throw error; });
+  readCache.set(key, { at: Date.now(), promise });
+  return promise.then((result) => ({ ...result, data: Array.isArray(result.data) ? result.data.slice() : result.data }));
+}
+
+export function invalidateQueryCache(kind = null) {
+  if (!kind) { readCache.clear(); return; }
+  for (const key of readCache.keys()) if (key.startsWith(`${kind}:`)) readCache.delete(key);
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('motion:pages-changed', () => invalidateQueryCache());
+  window.addEventListener('motion:comments-changed', () => invalidateQueryCache('comments'));
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') invalidateQueryCache(); });
+}
+
+// Total comment count for the team (used by the Home checklist).
+export function getCommentCount() {
+  return cachedRead('comments:count', async () => {
+    const { count, error } = await supabase.from('comments').select('id', { count: 'exact', head: true });
+    return { data: null, count: count || 0, error };
+  });
+}
+
+// ============================================
 // USER QUERIES
 // ============================================
 
@@ -15,6 +57,8 @@ export async function getUserProfile(userId) {
 }
 
 export async function updateUserProfile(userId, updates) {
+  invalidateQueryCache('members');
+  invalidateQueryCache('tasks');
   const { data, error } = await supabase
     .from('users')
     .update(updates)
@@ -44,6 +88,7 @@ export async function removeWorkspaceInvitation(invitationId) {
 }
 
 export async function acceptWorkspaceInvitation(token) {
+  invalidateQueryCache('members');
   const { data, error } = await supabase.rpc('accept_workspace_invitation', { invite_token: token });
   return { data, error };
 }
@@ -70,6 +115,7 @@ export async function getWorkspace(workspaceId) {
 }
 
 export async function createWorkspace(name, ownerId) {
+  invalidateQueryCache('members');
   const { data, error } = await supabase
     .from('workspaces')
     .insert({ name, owner_id: ownerId })
@@ -98,7 +144,11 @@ function isMissingColumnError(error, table, column) {
     (message.includes(`'${column}' column of '${table}'`) && message.includes('schema cache'));
 }
 
-export async function getPages(workspaceId) {
+export function getPages(workspaceId) {
+  return cachedRead(`pages:${workspaceId}`, () => loadPages(workspaceId));
+}
+
+async function loadPages(workspaceId) {
   let { data, error } = await supabase
     .from('pages')
     .select('*')
@@ -160,6 +210,7 @@ export async function getPage(pageId) {
 }
 
 export async function createPage(workspaceId, title = 'Untitled', pageType = 'note', content = {}, parentId = null) {
+  invalidateQueryCache('pages');
   const { data, error } = await supabase
     .from('pages')
     .insert({
@@ -182,6 +233,7 @@ export async function createPage(workspaceId, title = 'Untitled', pageType = 'no
 }
 
 export async function updatePage(pageId, updates) {
+  invalidateQueryCache('pages');
   const { data, error } = await supabase
     .from('pages')
     .update(updates)
@@ -196,15 +248,19 @@ export async function togglePageFavorite(pageId, isFavorite) {
 }
 
 export async function deletePage(pageId) {
+  invalidateQueryCache('pages');
+  invalidateQueryCache('tasks');
   const { error } = await supabase.from('pages').delete().eq('id', pageId);
   return { error };
 }
 
 export async function archivePage(pageId) {
+  invalidateQueryCache('pages');
   return updatePage(pageId, { archived_at: new Date().toISOString() });
 }
 
 export async function restorePage(pageId) {
+  invalidateQueryCache('pages');
   return updatePage(pageId, { archived_at: null });
 }
 
@@ -249,7 +305,14 @@ export async function deleteNote(noteId) {
 // TASK QUERIES
 // ============================================
 
-export async function getTasks({ workspaceId, pageId, status, limit } = {}) {
+export function getTasks(options = {}) {
+  const { workspaceId, pageId, status, limit } = options;
+  // Only the common "all tasks in this team" read is cached.
+  if (workspaceId && !pageId && !status && !limit) return cachedRead(`tasks:${workspaceId}`, () => loadTasks(options));
+  return loadTasks(options);
+}
+
+async function loadTasks({ workspaceId, pageId, status, limit } = {}) {
   let query = supabase
     .from('tasks')
     .select('*, assignee:users!assignee_id(id, name, avatar_url)')
@@ -298,6 +361,7 @@ export async function createTask(
   title,
   { workspaceId, pageId, status = 'todo', priority = 'medium', assigneeId, dueDate, tags, sortOrder = Date.now(), teamId, progress, details } = {}
 ) {
+  invalidateQueryCache('tasks');
   const row = {
     title,
     workspace_id: workspaceId || null,
@@ -322,6 +386,7 @@ export async function createTask(
 }
 
 export async function updateTask(taskId, updates) {
+  invalidateQueryCache('tasks');
   const nextUpdates = { ...updates };
   if (Object.hasOwn(nextUpdates, 'status')) {
     nextUpdates.completed = nextUpdates.status === 'done';
@@ -335,14 +400,17 @@ export async function updateTask(taskId, updates) {
   return { data, error };
 }
 
+// Un-checking a finished task means work continues on it, so it goes back to
+// "In progress" (it keeps its progress, e.g. 90%) rather than "To do".
 export async function toggleTask(taskId, completed) {
   return updateTask(taskId, {
     completed,
-    status: completed ? 'done' : 'todo'
+    status: completed ? 'done' : 'in_progress'
   });
 }
 
 export async function deleteTask(taskId) {
+  invalidateQueryCache('tasks');
   const { error } = await supabase.from('tasks').delete().eq('id', taskId);
   return { error };
 }
@@ -351,7 +419,11 @@ export async function deleteTask(taskId) {
 // COLLABORATION QUERIES
 // ============================================
 
-export async function getWorkspaceMembers(workspaceId) {
+export function getWorkspaceMembers(workspaceId) {
+  return cachedRead(`members:${workspaceId}`, () => loadWorkspaceMembers(workspaceId));
+}
+
+async function loadWorkspaceMembers(workspaceId) {
   const { data, error } = await supabase
     .from('workspace_members')
     .select('id, workspace_id, user_id, role, created_at, user:users(id, name, email, avatar_url)')
@@ -370,6 +442,7 @@ export async function inviteWorkspaceMember(workspaceId, userId, role = 'editor'
 }
 
 export async function updateWorkspaceMember(memberId, updates) {
+  invalidateQueryCache('members');
   const { data, error } = await supabase
     .from('workspace_members')
     .update(updates)
@@ -380,6 +453,7 @@ export async function updateWorkspaceMember(memberId, updates) {
 }
 
 export async function removeWorkspaceMember(memberId) {
+  invalidateQueryCache('members');
   const { error } = await supabase.from('workspace_members').delete().eq('id', memberId);
   return { error };
 }
@@ -400,6 +474,7 @@ export function isMissingMentionsColumn(error) {
 }
 
 export async function createComment(pageId, content, parentId = null, mentions = []) {
+  invalidateQueryCache('comments');
   const { data: authData, error: authError } = await supabase.auth.getUser();
   if (authError || !authData?.user) return { data: null, error: authError || { message: 'Sign in to post a comment.' } };
   const row = { page_id: pageId, user_id: authData.user.id, content, parent_id: parentId };
@@ -414,6 +489,7 @@ export async function createComment(pageId, content, parentId = null, mentions =
 }
 
 export async function createTaskComment(taskId, userId, content, mentions = []) {
+  invalidateQueryCache('comments');
   const row = { task_id: taskId, user_id: userId, content };
   let { error } = await supabase.from('task_comments').insert(mentions.length ? { ...row, mentions } : row);
   if (error && mentions.length && isMissingMentionsColumn(error)) ({ error } = await supabase.from('task_comments').insert(row));
@@ -421,6 +497,7 @@ export async function createTaskComment(taskId, userId, content, mentions = []) 
 }
 
 export async function updateComment(commentId, content) {
+  invalidateQueryCache('comments');
   const { data, error } = await supabase
     .from('comments')
     .update({ content })
@@ -431,11 +508,16 @@ export async function updateComment(commentId, content) {
 }
 
 export async function deleteComment(commentId) {
+  invalidateQueryCache('comments');
   const { error } = await supabase.from('comments').delete().eq('id', commentId);
   return { error };
 }
 
-export async function getNotifications(limit = 25) {
+export function getNotifications(limit = 25) {
+  return cachedRead(`notifications:${limit}`, () => loadNotifications(limit));
+}
+
+async function loadNotifications(limit) {
   const { data, error } = await supabase
     .from('notifications')
     .select('*, actor:users!actor_id(id, name, avatar_url)')
@@ -445,6 +527,7 @@ export async function getNotifications(limit = 25) {
 }
 
 export async function markNotificationRead(notificationId) {
+  invalidateQueryCache('notifications');
   const { data, error } = await supabase
     .from('notifications')
     .update({ read_at: new Date().toISOString() })
@@ -455,6 +538,7 @@ export async function markNotificationRead(notificationId) {
 }
 
 export async function markAllNotificationsRead() {
+  invalidateQueryCache('notifications');
   const { error } = await supabase
     .from('notifications')
     .update({ read_at: new Date().toISOString() })

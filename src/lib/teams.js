@@ -2,6 +2,7 @@
 // The database (sql/project-teams.sql) enforces who may change what; the helpers
 // here only mirror those rules so the screens show the right buttons.
 import { supabase } from './supabase.js';
+import { cachedRead, invalidateQueryCache } from './queries.js';
 
 export const TEAM_COLORS = {
   blue: '#2E7CA9',
@@ -22,7 +23,11 @@ function isMissingTeamsTable(error) {
   return Boolean(error) && (error.code === '42P01' || error.code === 'PGRST205' || /project_teams/.test(error.message || ''));
 }
 
-export async function getProjectTeams(projectId) {
+export function getProjectTeams(projectId) {
+  return cachedRead(`teams:project:${projectId}`, () => loadProjectTeams(projectId));
+}
+
+async function loadProjectTeams(projectId) {
   const { data, error } = await supabase
     .from('project_teams')
     .select(TEAM_SELECT)
@@ -33,7 +38,11 @@ export async function getProjectTeams(projectId) {
   return { data: data || [], error };
 }
 
-export async function getWorkspaceTeams(workspaceId) {
+export function getWorkspaceTeams(workspaceId) {
+  return cachedRead(`teams:workspace:${workspaceId}`, () => loadWorkspaceTeams(workspaceId));
+}
+
+async function loadWorkspaceTeams(workspaceId) {
   const { data, error } = await supabase
     .from('project_teams')
     .select('id, project_id, name, color, leader_id, members:project_team_members(user_id)')
@@ -44,6 +53,7 @@ export async function getWorkspaceTeams(workspaceId) {
 }
 
 async function setTeamMembers(teamId, userIds, existing = []) {
+  invalidateQueryCache('teams');
   const wanted = new Set(userIds.filter(Boolean));
   const current = new Set(existing);
   const toAdd = [...wanted].filter((id) => !current.has(id));
@@ -60,6 +70,7 @@ async function setTeamMembers(teamId, userIds, existing = []) {
 }
 
 export async function createTeam({ workspaceId, projectId, name, color = 'blue', leaderId = null, memberIds = [], sortOrder = Date.now() % 2147483647 }) {
+  invalidateQueryCache('teams');
   const { data, error } = await supabase
     .from('project_teams')
     .insert({ workspace_id: workspaceId, project_id: projectId, name: String(name).trim().slice(0, 60), color: TEAM_COLORS[color] ? color : 'blue', leader_id: leaderId || null, sort_order: sortOrder })
@@ -73,6 +84,7 @@ export async function createTeam({ workspaceId, projectId, name, color = 'blue',
 }
 
 export async function updateTeam(team, { name, color, leaderId, memberIds }) {
+  invalidateQueryCache('teams');
   const { error } = await supabase
     .from('project_teams')
     .update({ name: String(name).trim().slice(0, 60), color: TEAM_COLORS[color] ? color : team.color, leader_id: leaderId || null })
@@ -85,6 +97,7 @@ export async function updateTeam(team, { name, color, leaderId, memberIds }) {
 }
 
 export async function deleteTeam(teamId) {
+  invalidateQueryCache('teams');
   const { error } = await supabase.from('project_teams').delete().eq('id', teamId);
   return { error };
 }
