@@ -1,54 +1,9 @@
-// Storage and management for Motion AI chat sessions
+// Storage and management for Groupify AI chat sessions
 const STORAGE_KEY = 'motion_ai_chats_v1';
 
+// No fake sample conversations: a new user starts with an empty, helpful screen.
 function getDefaultChats() {
-  const now = new Date();
-  const sampleDate = new Date(now.getFullYear(), 3, 6); // Apr 6
-
-  return [
-    {
-      id: 'chat-sample-1',
-      title: 'Schema, Tables & Relationships Overview',
-      createdAt: sampleDate.toISOString(),
-      updatedAt: sampleDate.toISOString(),
-      messages: [
-        {
-          id: 'msg-1',
-          sender: 'user',
-          text: 'Explain the database schema, core tables, and relationships in the project',
-          timestamp: sampleDate.toISOString()
-        },
-        {
-          id: 'msg-2',
-          sender: 'ai',
-          text: `Welcome! Here is a detailed overview of the core database schema and tables in the **Motion Workspace** project:
-
-### 1. Users Table (\`users\`)
-- Acts as an extension of Supabase Auth (\`auth.users\`).
-- Fields: Identifier (\`id\`), Email (\`email\`), Name (\`name\`), and profile avatar (\`avatar_url\`).
-
-### 2. Workspaces (\`workspaces\` & \`workspace_members\`)
-- **\`workspaces\`**: Stores workspace ID, title/name, and owner identifier (\`owner_id\`).
-- **\`workspace_members\`**: Manages member permissions with role levels (\`owner\`, \`admin\`, \`editor\`, \`commenter\`, \`viewer\`).
-
-### 3. Pages & Notes (\`pages\`)
-- Stores documents with hierarchical nested tree support via \`parent_id\`.
-- Supports multiple types: (\`note\`, \`document\`, \`kanban\`, \`database\`).
-- Contains rich structured document blocks as JSON (\`content\`).
-
-### 4. Tasks Table (\`tasks\`)
-- Powers the Kanban task board (\`kanban\`).
-- Fields: Title (\`title\`), Status (\`status\`), Priority (\`priority\`), Assignee (\`assignee_id\`), and Due Date (\`due_date\`).
-
-### 5. Team Chat Messages (\`team_chat_messages\`)
-- Powers real-time messaging, file attachments, and image previews between members of each workspace.
-
-Would you like more details on a specific table or Row Level Security (RLS) policies?`,
-          timestamp: sampleDate.toISOString()
-        }
-      ]
-    }
-  ];
+  return [];
 }
 
 export function getStoredChats() {
@@ -60,7 +15,8 @@ export function getStoredChats() {
       return defaults;
     }
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) && parsed.length > 0 ? parsed : getDefaultChats();
+    // Drop the old built-in sample chat that earlier versions stored.
+    return Array.isArray(parsed) ? parsed.filter((chat) => chat?.id !== 'chat-sample-1') : getDefaultChats();
   } catch {
     return getDefaultChats();
   }
@@ -116,6 +72,16 @@ export function addMessageToChat(chatId, message) {
 
   saveStoredChats(chats);
   return chat;
+}
+
+export function updateMessageInChat(chatId, messageId, patch) {
+  const chats = getStoredChats();
+  const chat = chats.find((item) => item.id === chatId);
+  const message = chat?.messages.find((item) => item.id === messageId);
+  if (!message) return null;
+  Object.assign(message, patch);
+  saveStoredChats(chats);
+  return message;
 }
 
 export function deleteAIChat(chatId) {

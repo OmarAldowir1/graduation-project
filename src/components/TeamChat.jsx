@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { supabase } from '../lib/supabase.js';
 import { setBreadcrumb } from '../legacy/app.js';
 
@@ -10,6 +10,15 @@ function memberHue(userId) {
   let hash = 0;
   for (const character of userId || '') hash = (Math.imul(hash, 31) + character.charCodeAt(0)) >>> 0;
   return hash % 360;
+}
+
+function dayLabel(value) {
+  const date = new Date(value);
+  const today = new Date();
+  if (date.toDateString() === today.toDateString()) return 'Today';
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  if (date.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return date.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' });
 }
 
 function ChatImage({ path }) {
@@ -28,9 +37,11 @@ function ChatImage({ path }) {
   return failed ? <p>Image unavailable.</p> : url ? <a href={url} target="_blank" rel="noreferrer"><img className="team-chat-image" src={url} alt="Image shared by a workspace member" onError={() => setFailed(true)} /></a> : <p>Loading image…</p>;
 }
 
-export default function TeamChat({ workspace, user }) {
+function TeamChatWorkspace({ workspace, user }) {
+  const workspaceId = workspace?.id;
+  const draftKey = workspaceId && user?.id ? `motion:chat-draft:${workspaceId}:${user.id}` : null;
   const [messages, setMessages] = useState([]);
-  const [text, setText] = useState('');
+  const [text, setText] = useState(() => draftKey ? sessionStorage.getItem(draftKey) || '' : '');
   const [file, setFile] = useState(null);
   const [preview, setPreview] = useState('');
   const [error, setError] = useState('');
@@ -38,12 +49,13 @@ export default function TeamChat({ workspace, user }) {
   const [ready, setReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [hasNewMessages, setHasNewMessages] = useState(false);
   const [refresh, setRefresh] = useState(0);
   const input = useRef(null);
   const list = useRef(null);
   const nearBottom = useRef(true);
+  const latestMessageId = useRef(null);
   const sendLock = useRef(false);
-  const workspaceId = workspace?.id;
 
   useEffect(() => { setBreadcrumb('Team chat'); }, []);
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
@@ -67,7 +79,11 @@ export default function TeamChat({ workspace, user }) {
           : `Could not load chat: ${loadError.message}`);
         return;
       }
-      setMessages((data || []).reverse());
+      const nextMessages = (data || []).reverse();
+      const nextLatestId = nextMessages.at(-1)?.id || null;
+      if (latestMessageId.current && nextLatestId !== latestMessageId.current && !nearBottom.current) setHasNewMessages(true);
+      latestMessageId.current = nextLatestId;
+      setMessages(current => current.length === nextMessages.length && current.at(-1)?.id === nextLatestId ? current : nextMessages);
       setConnectionError(''); setReady(true);
     }
     void load();
@@ -77,6 +93,12 @@ export default function TeamChat({ workspace, user }) {
   useEffect(() => {
     if (nearBottom.current && list.current) list.current.scrollTop = list.current.scrollHeight;
   }, [messages]);
+
+  function jumpToLatest() {
+    if (list.current) list.current.scrollTop = list.current.scrollHeight;
+    nearBottom.current = true;
+    setHasNewMessages(false);
+  }
 
   function chooseImage(event) {
     const selected = event.target.files?.[0];
@@ -105,8 +127,9 @@ export default function TeamChat({ workspace, user }) {
       const { error: sendError } = await supabase.from('workspace_messages').insert({ id, workspace_id: workspaceId, user_id: user.id, body: text.trim(), image_path: imagePath });
       if (sendError) throw sendError;
       setText(''); setFile(null); setPreview('');
+      if (draftKey) sessionStorage.removeItem(draftKey);
       if (input.current) input.current.value = '';
-      nearBottom.current = true; setRefresh(value => value + 1);
+      nearBottom.current = true; setHasNewMessages(false); setRefresh(value => value + 1);
     } catch (sendError) {
       setError(`Could not send message: ${sendError.message}. Your draft is still here. Check the conversation before retrying.`);
     } finally {
@@ -116,33 +139,45 @@ export default function TeamChat({ workspace, user }) {
 
   if (!workspaceId) return <div className="empty-state"><h2>Select a workspace to chat</h2></div>;
   return <section className="team-chat" aria-label="Workspace team chat">
-    <header><h1>Team chat</h1><p>{workspace.name} · Only this workspace’s members · Refreshes every 5 seconds</p></header>
+    <header className="team-chat-header">
+      <div className="team-chat-heading"><span className="material-symbols-outlined" aria-hidden="true">forum</span><div><p className="team-chat-kicker">WORKSPACE CONVERSATION</p><h1>Team chat</h1></div></div>
+      <p>{workspace.name} · Members only · Updates every 5 seconds</p>
+    </header>
     {connectionError && <div className="team-chat-error" role="alert">{connectionError} <button type="button" onClick={() => setRefresh(value => value + 1)}>Retry</button></div>}
-    {error && <div className="team-chat-error" role="alert">{error}</div>}
-    <div ref={list} className="team-chat-messages" aria-label="Messages" onScroll={() => {
+    <div className="team-chat-conversation"><div ref={list} className="team-chat-messages" role="log" aria-label="Team messages" aria-live="polite" aria-relevant="additions" aria-busy={loading} onScroll={() => {
       const el = list.current;
       nearBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+      if (nearBottom.current) setHasNewMessages(false);
     }}>
-      {loading ? <p role="status">Loading conversation…</p> : !messages.length && !connectionError ? <div className="empty-state"><h2>Start the conversation</h2><p>Share an update or an image with your team.</p></div> : null}
+      {loading ? <p className="team-chat-loading" role="status">Loading conversation…</p> : !messages.length && !connectionError ? <div className="team-chat-empty"><span className="material-symbols-outlined" aria-hidden="true">chat_bubble_outline</span><h2>Start the conversation</h2><p>Share an update or image with your workspace.</p></div> : null}
       {messages.length === 100 && <p className="team-chat-caption">Showing the latest 100 messages.</p>}
-      {messages.map(message => <article key={message.id} style={{ '--sender-hue': memberHue(message.user_id) }} className={`team-chat-message ${message.user_id === user?.id ? 'is-own' : ''}`}>
+      {messages.map((message, index) => <Fragment key={message.id}>
+        {(index === 0 || new Date(messages[index - 1].created_at).toDateString() !== new Date(message.created_at).toDateString()) && <div className="team-chat-day" role="separator" aria-label={dayLabel(message.created_at)}><span>{dayLabel(message.created_at)}</span></div>}
+        <article style={{ '--sender-hue': memberHue(message.user_id) }} className={`team-chat-message ${message.user_id === user?.id ? 'is-own' : ''}`}>
         <div className="team-chat-meta"><strong>{message.user_id === user?.id ? 'You' : message.sender?.name || 'Workspace member'}</strong><time dateTime={message.created_at} title={new Date(message.created_at).toLocaleString()}>{new Date(message.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>
         {message.body && <p className="team-chat-body">{message.body}</p>}
         {message.image_path && <ChatImage path={message.image_path} />}
-      </article>)}
+        </article>
+      </Fragment>)}
     </div>
+    {hasNewMessages && <button className="team-chat-jump" type="button" onClick={jumpToLatest}><span className="material-symbols-outlined" aria-hidden="true">arrow_downward</span> New messages</button>}</div>
     <form className="team-chat-composer" onSubmit={send}>
       {file && <div className="team-chat-attachment">{preview && <img src={preview} alt="Selected image preview" />}<span>{file.name}</span><button type="button" disabled={sending} onClick={() => { setFile(null); setPreview(''); input.current.value = ''; }}>Remove image</button></div>}
       <label htmlFor="chat-message">Message your team</label>
-      <textarea id="chat-message" value={text} onChange={event => setText(event.target.value)} maxLength={4000} rows={2} disabled={sending} placeholder="Write a message…" />
+      <textarea id="chat-message" value={text} onChange={event => { setText(event.target.value); if (draftKey) sessionStorage.setItem(draftKey, event.target.value); }} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); if (text.trim() || file) event.currentTarget.form?.requestSubmit(); } }} maxLength={4000} rows={2} disabled={sending || !ready} aria-describedby={`team-chat-hint${error ? ' team-chat-send-error' : ''}`} placeholder={ready ? 'Write a message…' : 'Connecting to chat…'} />
+      {error && <div id="team-chat-send-error" className="team-chat-error" role="alert">{error}</div>}
       <div className="team-chat-actions">
-        <small>{text.length}/4000 · Images up to 5 MB</small>
-        <input ref={input} type="file" accept={IMAGE_TYPES.join(',')} onChange={chooseImage} disabled={sending} hidden tabIndex={-1} />
-        <button className="team-chat-attach-button" type="button" aria-label="Attach image" title="Attach image (up to 5 MB)" disabled={sending} onClick={() => input.current?.click()}>
+        <small id="team-chat-hint">Enter to send · Shift+Enter for a new line · {text.length}/4000</small>
+        <input ref={input} type="file" accept={IMAGE_TYPES.join(',')} onChange={chooseImage} disabled={sending || !ready} hidden tabIndex={-1} />
+        <button className="team-chat-attach-button" type="button" aria-label="Attach image" title="Attach image (up to 5 MB)" disabled={sending || !ready} onClick={() => input.current?.click()}>
           <span className="material-symbols-outlined" aria-hidden="true">attach_file</span>
         </button>
         <button className="modal-btn-primary" type="submit" disabled={sending || !ready || (!text.trim() && !file)}>{sending ? 'Sending…' : 'Send'}</button>
       </div>
     </form>
   </section>;
+}
+
+export default function TeamChat(props) {
+  return <TeamChatWorkspace key={`${props.workspace?.id || 'none'}:${props.user?.id || 'none'}`} {...props} />;
 }

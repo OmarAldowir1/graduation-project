@@ -8,7 +8,7 @@ import { getPages, createPage, updatePage, togglePageFavorite, archivePage, dele
 import { escapeHtml } from '../../lib/sanitize.js';
 
 export async function renderDatabase(container) {
-  setBreadcrumb('Library');
+  setBreadcrumb('Table view');
 
   const workspaceId = AppState.workspace?.id;
   if (!workspaceId) {

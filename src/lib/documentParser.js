@@ -1,4 +1,8 @@
 import JSZip from 'jszip';
+import {getDocument, GlobalWorkerOptions} from 'pdfjs-dist';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+
+GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 function decodeXmlEntities(str) {
   if (!str) return '';
@@ -10,26 +14,6 @@ function decodeXmlEntities(str) {
     .replace(/&apos;/g, "'")
     .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(dec))
     .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
-}
-
-function readFileAsBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result;
-      if (typeof result !== 'string') {
-        return reject(new Error('Failed to read file as data URL'));
-      }
-      const commaIndex = result.indexOf(',');
-      if (commaIndex !== -1) {
-        resolve(result.substring(commaIndex + 1));
-      } else {
-        resolve(result);
-      }
-    };
-    reader.onerror = (err) => reject(err || new Error('Error reading binary file'));
-    reader.readAsDataURL(file);
-  });
 }
 
 function readFileAsText(file) {
@@ -158,18 +142,25 @@ export async function parseAttachedDocument(file) {
     throw new Error(`File is too large (${(file.size / (1024 * 1024)).toFixed(1)}MB). Maximum allowed size is 16MB.`);
   }
 
-  // 1. PDF Files (.pdf) - sent directly to Gemini multimodal via base64 inlineData
+  // 1. Extract PDF text locally; the Cloudflare text model does not read PDFs.
   if (fileName.endsWith('.pdf') || file.type === 'application/pdf') {
-    const base64 = await readFileAsBase64(file);
+    const document = await getDocument({data: new Uint8Array(await file.arrayBuffer())}).promise;
+    const pages = [];
+    for (let number = 1; number <= document.numPages && pages.join('').length < 16000; number++) {
+      const page = await document.getPage(number);
+      const text = await page.getTextContent();
+      pages.push(`Page ${number}: ${text.items.map(item => item.str || '').join(' ')}`);
+    }
+    const content = pages.join('\n\n').slice(0, 16000);
+    if (!content.trim()) throw new Error('This PDF has no selectable text. Scanned PDFs need OCR before AI analysis.');
     return {
       name: file.name,
       size: file.size,
       fileType: 'pdf',
       fileTypeLabel: 'PDF Document',
       icon: 'picture_as_pdf',
-      mimeType: 'application/pdf',
-      base64,
-      content: null // Read natively by Gemini vision/doc parser
+      mimeType: 'text/plain',
+      content
     };
   }
 

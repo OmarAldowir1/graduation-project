@@ -1,6 +1,12 @@
+import { loaderHtml } from './loader.js';
 import Quill from 'quill';
+import QuillCursors from 'quill-cursors';
 import 'quill/dist/quill.core.css';
+
+// Teammates' cursors during live co-editing (see liveCollab.js).
+Quill.register('modules/cursors', QuillCursors, true);
 import { executeAIAction } from './editorAI.js';
+import { createSlashMenu, attachMarkdownShortcuts, createBlockActionsMenu, ensureTrailingParagraph } from './blockMenus.js';
 
 // ============================================
 // Custom Blots for Notion-like Rich Text
@@ -103,6 +109,28 @@ class TableBlot extends BlockEmbed {
 }
 Quill.register(TableBlot, true);
 
+// Callouts and toggles used to store their whole outer HTML as their value, which
+// nested a new box inside the old one every time the block was copied (reload,
+// duplicate, move, live sync). These helpers always reduce a value to its inner
+// content, which also repairs blocks that are already nested.
+function innermostCalloutText(html) {
+  const template = document.createElement('template');
+  template.innerHTML = String(html || '');
+  let texts = [...template.content.querySelectorAll('.editor-callout-text')];
+  if (!texts.length) return String(html || '');
+  texts = texts.filter((text) => !text.querySelector('.editor-callout'));
+  return (texts.pop() || template.content.querySelector('.editor-callout-text')).innerHTML.trim();
+}
+function innermostToggleParts(root) {
+  const toggles = [...root.querySelectorAll('.editor-toggle')];
+  const toggle = toggles.filter((item) => !item.querySelector('.editor-toggle')).pop() || toggles[0];
+  if (!toggle) return null;
+  return {
+    summary: toggle.querySelector('summary')?.innerHTML.trim() || 'Toggle heading',
+    body: toggle.querySelector('.editor-toggle-content')?.innerHTML.trim() || ''
+  };
+}
+
 class CalloutBlot extends BlockEmbed {
   static blotName = 'callout-block';
   static tagName = 'div';
@@ -111,7 +139,8 @@ class CalloutBlot extends BlockEmbed {
   static create(value) {
     const node = super.create();
     node.setAttribute('contenteditable', 'false');
-    const content = typeof value === 'string' ? value : (value?.text || 'Type your callout here...');
+    const raw = typeof value === 'string' ? value : (value?.text || 'Type your callout here...');
+    const content = innermostCalloutText(raw) || 'Type your callout here...';
     node.innerHTML = `
       <aside class="editor-callout">
         <span class="editor-callout-icon" contenteditable="false">💡</span>
@@ -122,8 +151,7 @@ class CalloutBlot extends BlockEmbed {
   }
 
   static value(node) {
-    const aside = node.querySelector('.editor-callout');
-    return aside ? aside.outerHTML : node.innerHTML;
+    return innermostCalloutText(node.innerHTML);
   }
 }
 Quill.register(CalloutBlot, true);
@@ -142,7 +170,14 @@ class ToggleBlot extends BlockEmbed {
       summary = value.summary || summary;
       body = value.body || body;
     } else if (typeof value === 'string' && value) {
-      summary = value;
+      if (value.includes('editor-toggle')) {
+        const template = document.createElement('template');
+        template.innerHTML = value;
+        const parts = innermostToggleParts(template.content);
+        if (parts) ({ summary, body } = parts);
+      } else {
+        summary = value;
+      }
     }
     node.innerHTML = `
       <details class="editor-toggle" open>
@@ -154,8 +189,7 @@ class ToggleBlot extends BlockEmbed {
   }
 
   static value(node) {
-    const toggle = node.querySelector('.editor-toggle');
-    return toggle ? toggle.outerHTML : node.innerHTML;
+    return innermostToggleParts(node) || { summary: 'Toggle heading', body: '' };
   }
 }
 Quill.register(ToggleBlot, true);
@@ -201,7 +235,9 @@ export function createNotionEditor({
   onChange = () => { },
   onAddComment = async () => { },
   onCommentClick = () => { },
-  onOpenContextMenu = () => { }
+  onOpenContextMenu = null,
+  onAskAI = null,
+  extraCommands = []
 }) {
   // Clear any existing contents in container
   container.innerHTML = '';
@@ -216,6 +252,7 @@ export function createNotionEditor({
   const quill = new Quill(quillMount, {
     modules: {
       toolbar: false,
+      cursors: { transformOnTextChange: true, hideDelayMs: 4000, hideSpeedMs: 300 },
       history: {
         delay: 1000,
         maxStack: 100,
@@ -236,15 +273,22 @@ export function createNotionEditor({
     return new Delta().insert({ 'callout-block': text });
   });
   quill.clipboard.addMatcher('details', (node) => {
-    const summary = node.querySelector('summary')?.innerHTML || 'Toggle details';
-    const body = node.querySelector('.editor-toggle-content')?.innerHTML || node.querySelector('p')?.innerHTML || '';
-    return new Delta().insert({ 'toggle-block': { summary, body } });
+    const holder = document.createElement('div');
+    holder.append(node.cloneNode(true));
+    const parts = innermostToggleParts(holder) || {
+      summary: node.querySelector('summary')?.innerHTML || 'Toggle details',
+      body: node.querySelector('.editor-toggle-content')?.innerHTML || node.querySelector('p')?.innerHTML || ''
+    };
+    return new Delta().insert({ 'toggle-block': parts });
   });
 
   // Set initial content
   if (initialHtml) {
     quill.clipboard.dangerouslyPasteHTML(initialHtml);
   }
+  ensureTrailingParagraph(quill, 'silent');
+  // Keep a writable line at the end after deletes/moves too.
+  quill.on('text-change', (_delta, _old, source) => { if (source !== 'silent') window.setTimeout(() => ensureTrailingParagraph(quill, 'silent'), 0); });
 
   // Floating selection toolbar
   const selectionToolbar = createSelectionToolbar(quill, container, {
@@ -252,8 +296,11 @@ export function createNotionEditor({
     onCommentClick
   });
 
-  // Slash command menu
-  const slashMenu = createSlashMenu(quill, container);
+  // "/" command menu, Markdown shortcuts, and the block actions menu
+  const slashMenu = createSlashMenu(quill, { extraCommands });
+  const shortcuts = attachMarkdownShortcuts(quill);
+  const blockActions = createBlockActionsMenu(quill, { onAskAI });
+  const openBlockActions = onOpenContextMenu || (({ block, x, y }) => blockActions.open(block, x, y));
 
   // AI preview overlay
   const aiOverlay = createAIOverlay(quill, container);
@@ -263,7 +310,8 @@ export function createNotionEditor({
 
   // Notion block hover & drag handle gutter (with drag_indicator & add button)
   const blockGutter = createBlockGutterManager(quill, container, {
-    onOpenContextMenu
+    onOpenContextMenu: openBlockActions,
+    onAddBelow: (index) => slashMenu.openAt(index)
   });
 
   // Comment click delegation
@@ -294,9 +342,24 @@ export function createNotionEditor({
     setHtml: (html) => {
       quill.clipboard.dangerouslyPasteHTML(html || '');
     },
+    // Start a new empty line at the end of the page and open the "/" menu there.
+    openBlockMenuAtEnd: () => {
+      const end = quill.getLength() - 1;
+      const [lastLine] = quill.getLine(end);
+      const lastIsEmptyText = lastLine && lastLine.length() <= 1 && !quill.getFormat(end, 1).list && !quill.getFormat(end, 1).header;
+      if (lastIsEmptyText) {
+        slashMenu.openAt(end);
+      } else {
+        quill.insertText(end + 1 > quill.getLength() ? end : end, '\n', 'user');
+        quill.formatLine(end + 1, 1, { header: false, list: false, blockquote: false, 'code-block': false }, 'user');
+        slashMenu.openAt(end + 1);
+      }
+    },
     destroy: () => {
       selectionToolbar.destroy();
       slashMenu.destroy();
+      shortcuts.destroy();
+      blockActions.destroy();
       aiOverlay.destroy();
       blockGutter.destroy();
       container.innerHTML = '';
@@ -785,225 +848,6 @@ function createSelectionToolbar(quill, container, { onAddComment }) {
 // 2. Slash Command Menu
 // ============================================
 
-const SLASH_COMMANDS = [
-  { id: 'p', label: 'Text', desc: 'Start writing with plain text', icon: 'text_fields' },
-  { id: 'h1', label: 'Heading 1', desc: 'Large section heading', icon: 'format_h1' },
-  { id: 'h2', label: 'Heading 2', desc: 'Medium section heading', icon: 'format_h2' },
-  { id: 'h3', label: 'Heading 3', desc: 'Small section heading', icon: 'format_h3' },
-  { id: 'table', label: 'Table', desc: 'Insert a 3x3 table with editable cells', icon: 'table_chart' },
-  { id: 'bullet', label: 'Bulleted list', desc: 'Create a simple bulleted list', icon: 'format_list_bulleted' },
-  { id: 'ordered', label: 'Numbered list', desc: 'Create a list with numbering', icon: 'format_list_numbered' },
-  { id: 'check', label: 'To-do list', desc: 'Track tasks with a to-do list', icon: 'check_box' },
-  { id: 'blockquote', label: 'Quote', desc: 'Capture a quote or citation', icon: 'format_quote' },
-  { id: 'callout', label: 'Callout', desc: 'Highlight note or tip with an icon', icon: 'lightbulb' },
-  { id: 'toggle', label: 'Toggle list', desc: 'Expandable details block', icon: 'arrow_right' },
-  { id: 'code-block', label: 'Code', desc: 'Capture a code snippet', icon: 'code' },
-  { id: 'divider', label: 'Divider', desc: 'Visually divide blocks', icon: 'horizontal_rule' }
-];
-
-function createSlashMenu(quill, container) {
-  const menu = document.createElement('div');
-  menu.className = 'motion-slash-menu';
-  menu.hidden = true;
-  document.body.appendChild(menu);
-
-  let activeIndex = 0;
-  let filteredCommands = [...SLASH_COMMANDS];
-  let slashPosition = null;
-
-  function renderCommands() {
-    menu.innerHTML = `
-      <div class="msm-header">Basic blocks</div>
-      <div class="msm-list">
-        ${filteredCommands.length ? filteredCommands.map((cmd, idx) => `
-          <button type="button" class="msm-item ${idx === activeIndex ? 'active' : ''}" data-cmd="${cmd.id}">
-            <span class="material-symbols-outlined msm-icon">${cmd.icon}</span>
-            <div class="msm-content">
-              <strong>${cmd.label}</strong>
-              <small>${cmd.desc}</small>
-            </div>
-          </button>
-        `).join('') : '<div class="msm-empty">No matching commands</div>'}
-      </div>
-    `;
-  }
-
-  function openMenu(atIndex) {
-    slashPosition = atIndex;
-    activeIndex = 0;
-    filteredCommands = [...SLASH_COMMANDS];
-    renderCommands();
-
-    const bounds = quill.getBounds(atIndex);
-    const quillRect = quill.root.getBoundingClientRect();
-
-    let left = quillRect.left + bounds.left;
-    let top = quillRect.top + bounds.bottom + 8;
-
-    const menuWidth = 320;
-    const menuHeight = 300;
-
-    // Viewport clamping
-    if (left + menuWidth > window.innerWidth - 12) {
-      left = window.innerWidth - menuWidth - 12;
-    }
-    if (top + menuHeight > window.innerHeight - 12) {
-      top = quillRect.top + bounds.top - menuHeight - 8;
-    }
-
-    menu.style.left = `${Math.max(12, Math.round(left))}px`;
-    menu.style.top = `${Math.max(12, Math.round(top))}px`;
-    menu.hidden = false;
-  }
-
-  function closeMenu() {
-    menu.hidden = true;
-    slashPosition = null;
-  }
-
-  function executeCommand(cmdId) {
-    if (slashPosition === null) return;
-    const sel = quill.getSelection();
-    const currentIndex = sel ? sel.index : slashPosition + 1;
-
-    // Delete the slash and query text
-    const deleteLength = Math.max(1, currentIndex - slashPosition);
-    quill.deleteText(slashPosition, deleteLength);
-
-    closeMenu();
-
-    // Apply format
-    if (cmdId === 'p') {
-      quill.formatLine(slashPosition, 1, {
-        header: false,
-        list: false,
-        blockquote: false,
-        'code-block': false
-      });
-    } else if (cmdId === 'h1') {
-      quill.formatLine(slashPosition, 1, 'header', 1);
-    } else if (cmdId === 'h2') {
-      quill.formatLine(slashPosition, 1, 'header', 2);
-    } else if (cmdId === 'h3') {
-      quill.formatLine(slashPosition, 1, 'header', 3);
-    } else if (cmdId === 'table') {
-      quill.insertEmbed(slashPosition, 'table-block', true);
-      quill.insertText(slashPosition + 1, '\n');
-      quill.setSelection(slashPosition + 2, 0);
-    } else if (cmdId === 'bullet') {
-      quill.formatLine(slashPosition, 1, 'list', 'bullet');
-    } else if (cmdId === 'ordered') {
-      quill.formatLine(slashPosition, 1, 'list', 'ordered');
-    } else if (cmdId === 'check') {
-      quill.formatLine(slashPosition, 1, 'list', 'check');
-    } else if (cmdId === 'blockquote') {
-      quill.formatLine(slashPosition, 1, 'blockquote', true);
-    } else if (cmdId === 'callout') {
-      quill.insertEmbed(slashPosition, 'callout-block', 'Highlight important information here...');
-      quill.insertText(slashPosition + 1, '\n');
-      quill.setSelection(slashPosition + 2, 0);
-    } else if (cmdId === 'toggle') {
-      quill.insertEmbed(slashPosition, 'toggle-block', { summary: 'Toggle heading', body: 'Hidden content here...' });
-      quill.insertText(slashPosition + 1, '\n');
-      quill.setSelection(slashPosition + 2, 0);
-    } else if (cmdId === 'code-block') {
-      quill.formatLine(slashPosition, 1, 'code-block', true);
-    } else if (cmdId === 'divider') {
-      quill.insertEmbed(slashPosition, 'divider', true);
-      quill.insertText(slashPosition + 1, '\n');
-      quill.setSelection(slashPosition + 2, 0);
-    }
-
-    quill.focus();
-  }
-
-  // Keyboard navigation & query filtering
-  quill.root.addEventListener('keydown', (e) => {
-    if (menu.hidden) {
-      if (e.key === '/') {
-        window.setTimeout(() => {
-          const sel = quill.getSelection();
-          if (!sel) return;
-          // Check preceding character
-          const textBefore = quill.getText(Math.max(0, sel.index - 2), 2);
-          if (sel.index === 1 || textBefore.startsWith('\n') || textBefore.startsWith(' ') || textBefore === '/') {
-            openMenu(sel.index - 1);
-          }
-        }, 10);
-      }
-      return;
-    }
-
-    // When menu is open:
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      if (filteredCommands.length > 0) {
-        activeIndex = (activeIndex + 1) % filteredCommands.length;
-        renderCommands();
-      }
-      return;
-    }
-    if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      if (filteredCommands.length > 0) {
-        activeIndex = (activeIndex - 1 + filteredCommands.length) % filteredCommands.length;
-        renderCommands();
-      }
-      return;
-    }
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      if (filteredCommands[activeIndex]) {
-        executeCommand(filteredCommands[activeIndex].id);
-      }
-      return;
-    }
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      closeMenu();
-      return;
-    }
-  });
-
-  quill.on('text-change', () => {
-    if (menu.hidden || slashPosition === null) return;
-    const sel = quill.getSelection();
-    if (!sel || sel.index < slashPosition) {
-      closeMenu();
-      return;
-    }
-
-    const query = quill.getText(slashPosition + 1, sel.index - slashPosition - 1).trim().toLowerCase();
-    if (query.includes(' ') || query.includes('\n')) {
-      closeMenu();
-      return;
-    }
-
-    filteredCommands = SLASH_COMMANDS.filter(cmd =>
-      cmd.label.toLowerCase().includes(query) || cmd.desc.toLowerCase().includes(query) || cmd.id.toLowerCase().includes(query)
-    );
-    activeIndex = 0;
-    renderCommands();
-  });
-
-  menu.addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    const item = e.target.closest('[data-cmd]');
-    if (item) {
-      executeCommand(item.dataset.cmd);
-    }
-  });
-
-  document.addEventListener('pointerdown', (e) => {
-    if (!menu.contains(e.target)) {
-      closeMenu();
-    }
-  });
-
-  return {
-    destroy: () => menu.remove()
-  };
-}
 
 // ============================================
 // 3. Contextual AI Action Overlay & Preview
@@ -1045,7 +889,7 @@ function createAIOverlay(quill, container) {
         <button type="button" class="mapc-close">×</button>
       </div>
       <div class="mapc-body mapc-loading">
-        <div class="loading-spinner"></div>
+        ${loaderHtml(22, 'Generating')}
         <span>Generating thoughtful revision...</span>
       </div>
     `;
@@ -1250,7 +1094,7 @@ function setupEditorInteractions(quill, onChange) {
 // 5. Block Hover Gutter & Drag Reorder Manager
 // ============================================
 
-function createBlockGutterManager(quill, container, { onOpenContextMenu = () => {} } = {}) {
+function createBlockGutterManager(quill, container, { onOpenContextMenu = () => {}, onAddBelow = null } = {}) {
   const gutterHandle = document.createElement('div');
   gutterHandle.className = 'notion-block-gutter-handle';
   gutterHandle.hidden = true;
@@ -1342,10 +1186,10 @@ function createBlockGutterManager(quill, container, { onOpenContextMenu = () => 
     const index = blot ? quill.getIndex(blot) : quill.getLength() - 1;
     const length = blot ? blot.length() : 1;
     const insertPos = index + length;
-    quill.insertText(insertPos, '\n');
-    quill.setSelection(insertPos + 1, 0);
-    quill.focus();
-    quill.root.dispatchEvent(new KeyboardEvent('keydown', { key: '/', bubbles: true }));
+    // New empty paragraph below this block, then the "/" menu on it.
+    quill.insertText(insertPos, '\n', 'user');
+    quill.formatLine(insertPos, 1, { header: false, list: false, blockquote: false, 'code-block': false }, 'user');
+    if (onAddBelow) onAddBelow(insertPos);
   });
 
   // Drag Button (drag_indicator)

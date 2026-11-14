@@ -2,10 +2,12 @@ import { useState, useEffect, useRef } from 'react';
 import {
   getStoredChats,
   createNewAIChat,
-  addMessageToChat
+  addMessageToChat,
+  updateMessageInChat
 } from '../lib/aiChatStore.js';
-import { chatWithGemini } from '../lib/gemini.js';
+import { runAgent, describeAction, executeAgentActions } from '../lib/agent.js';
 import { parseAttachedDocument } from '../lib/documentParser.js';
+import { GroupifyLoader } from './GroupifyLogo.jsx';
 
 function renderMarkdownSnippet(text) {
   if (!text) return null;
@@ -94,7 +96,55 @@ function formatInline(str) {
   });
 }
 
-export default function AIChatView({ activeChatId, onSelectChat, workspace, user }) {
+function AgentActionCard({ chatId, message }) {
+  const [busy, setBusy] = useState(false);
+  const refs = new Map(Object.entries(message.refMap || {}));
+  const created = new Map(message.actions.filter((a) => a.ref).map((a) => [a.ref, a.title]));
+  const state = message.actionState || 'pending';
+
+  async function apply() {
+    setBusy(true);
+    const { results, navigateTo } = await executeAgentActions(message.actions, { refs });
+    const failed = results.filter((r) => !r.ok).length;
+    updateMessageInChat(chatId, message.id, { actionState: failed === results.length ? 'failed' : 'applied', results });
+    setBusy(false);
+    if (navigateTo && !failed) window.location.assign(`#${navigateTo}`);
+  }
+
+  return (
+    <div className={`agent-card is-${state}`}>
+      <div className="agent-card-head">
+        <span className="material-symbols-outlined">{state === 'applied' ? 'task_alt' : state === 'cancelled' ? 'block' : 'bolt'}</span>
+        <strong>{state === 'applied' ? 'Applied' : state === 'cancelled' ? 'Cancelled' : state === 'failed' ? 'Could not apply' : `${message.actions.length} proposed change${message.actions.length === 1 ? '' : 's'}`}</strong>
+      </div>
+      <ul>
+        {message.actions.map((action, index) => {
+          const info = describeAction(action, refs, created);
+          const result = message.results?.[index];
+          return (
+            <li key={index} className={result ? (result.ok ? 'is-ok' : 'is-error') : ''}>
+              <span className="material-symbols-outlined">{result ? (result.ok ? 'check_circle' : 'error') : info.icon}</span>
+              <div>
+                {result?.ok && result.href ? <a href={result.href}>{info.text}</a> : <span>{info.text}</span>}
+                {info.detail ? <small>{info.detail}</small> : null}
+                {result && !result.ok ? <small className="agent-error">{result.error}</small> : null}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      {message.dropped ? <p className="agent-note">{message.dropped} suggestion{message.dropped === 1 ? ' was' : 's were'} skipped because {message.dropped === 1 ? 'it' : 'they'} referred to something that doesn’t exist.</p> : null}
+      {state === 'pending' ? (
+        <div className="agent-card-actions">
+          <button type="button" className="modal-btn-secondary" disabled={busy} onClick={() => updateMessageInChat(chatId, message.id, { actionState: 'cancelled' })}>Cancel</button>
+          <button type="button" className="modal-btn-primary" disabled={busy} onClick={apply}>{busy ? 'Applying…' : 'Apply'}</button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export default function AIChatView({ activeChatId, onSelectChat, user }) {
   const [chats, setChats] = useState(getStoredChats);
   const [inputText, setInputText] = useState('');
   const [isGenerating, setIsGenerating] = useState(false);
@@ -156,7 +206,22 @@ export default function AIChatView({ activeChatId, onSelectChat, workspace, user
     }
   }
 
-  async function handleSendMessage(promptText, overrideFile = null) {
+  // A page's "Ask AI" menu leaves a pending request: start a fresh chat for it.
+  useEffect(() => {
+    let pending = null;
+    try {
+      pending = JSON.parse(sessionStorage.getItem('motion-ai-pending') || 'null');
+      sessionStorage.removeItem('motion-ai-pending');
+    } catch { /* ignore */ }
+    if (!pending?.prompt) return;
+    const chat = createNewAIChat('New chat');
+    onSelectChat?.(chat.id);
+    window.setTimeout(() => handleSendMessage(pending.prompt, null, { focusPageId: pending.pageId, chatId: chat.id }), 0);
+    // Runs once when the view opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleSendMessage(promptText, overrideFile = null, options = {}) {
     const fileToUpload = overrideFile !== null ? overrideFile : attachedFile;
     const baseText = (promptText || inputText).trim();
 
@@ -165,7 +230,7 @@ export default function AIChatView({ activeChatId, onSelectChat, workspace, user
 
     const textToSend = baseText || (fileToUpload ? `Please read and analyze "${fileToUpload.name}" and provide a comprehensive summary and key takeaways.` : '');
 
-    let targetChatId = currentChat?.id;
+    let targetChatId = options.chatId || currentChat?.id;
     if (!targetChatId) {
       const chatTitle = fileToUpload ? `📄 ${fileToUpload.name}` : 'New chat';
       const newChat = createNewAIChat(chatTitle);
@@ -188,24 +253,22 @@ export default function AIChatView({ activeChatId, onSelectChat, workspace, user
     setIsGenerating(true);
 
     try {
-      // Call Gemini 3.8 Flash / 3.5 Flash
-      const aiResponseText = await chatWithGemini({
-        messages: currentChat?.messages || [],
-        newUserPrompt: textToSend,
-        attachedFile: fileToUpload,
-        workspaceContext: workspace
-      });
-
+      const history = (getStoredChats().find((chat) => chat.id === targetChatId)?.messages || []).slice(0, -1);
+      const result = await runAgent({ prompt: textToSend, history, attachment: fileToUpload, focusPageId: options.focusPageId || null });
+      const refMap = Object.fromEntries([...result.context.refs].map(([ref, entry]) => [ref, { kind: entry.kind, id: entry.id, title: entry.title }]));
+      const fallback = result.actions.length ? 'Here is what I can do — review and apply:' : 'Done.';
       addMessageToChat(targetChatId, {
         sender: 'ai',
-        text: aiResponseText
+        text: result.reply || fallback,
+        ...(result.actions.length ? { actions: result.actions, refMap, actionState: 'pending' } : {}),
+        ...(result.dropped?.length ? { dropped: result.dropped.length } : {}),
+        ...(result.sources?.length ? { sources: result.sources } : {})
       });
     } catch (err) {
-      console.error('Gemini chat error:', err);
-      const fallbackText = generateSmartAIResponse(textToSend, workspace, fileToUpload);
+      console.error('AI chat error:', err);
       addMessageToChat(targetChatId, {
         sender: 'ai',
-        text: `${fallbackText}\n\n*(Notice: Error connecting to Gemini API: ${err.message})*`
+        text: `### AI Assistant Notice\n${err.message || 'AI is unavailable. Please try again later.'}`
       });
     } finally {
       setIsGenerating(false);
@@ -247,26 +310,31 @@ export default function AIChatView({ activeChatId, onSelectChat, workspace, user
 
   const starterPrompts = [
     {
-      title: 'Analyze & Summarize PDF or Slides',
-      prompt: 'Upload a PDF or PowerPoint presentation for instant summary and explanation',
+      title: 'What should I work on?',
+      prompt: 'What is on my plate? List my open tasks by due date and flag anything overdue.',
+    },
+    {
+      title: 'Plan a new project',
+      prompt: 'Create a project for organising a team presentation next Friday, with a plan page and tasks split between the team.',
+    },
+    {
+      title: 'Project status report',
+      prompt: 'Summarize the progress of each project: what is done, what is open, what is overdue and who owns it.',
+    },
+    {
+      title: 'Clean up unowned work',
+      prompt: 'Which open tasks have no owner? Suggest a fair split between team members and assign them.',
+    },
+    {
+      title: 'Summarize a document',
+      prompt: 'Upload a PDF or slides and I will summarize it, quiz you, or turn it into tasks.',
       action: () => fileInputRef.current?.click()
     },
     {
-      title: 'Generate Practice Exam & Quiz',
-      prompt: 'Create a question bank with answer keys and explanations from your study materials',
-      action: () => fileInputRef.current?.click()
-    },
-    {
-      title: 'Schema & Tables Overview',
-      prompt: 'Explain the database schema, core tables, and relationships in the project',
-      action: () => handleSendMessage('Explain the database schema, core tables, and relationships in the project')
-    },
-    {
-      title: 'Project Action Plan',
-      prompt: 'Create an actionable project plan with a timeline, milestones, and task breakdown',
-      action: () => handleSendMessage('Create an actionable project plan with a timeline, milestones, and task breakdown')
+      title: 'Write meeting notes',
+      prompt: 'Create a meeting notes page in my latest project with agenda, decisions and action items sections.',
     }
-  ];
+  ].map((item) => ({ ...item, action: item.action || (() => handleSendMessage(item.prompt)) }));
 
   function getFileIcon(type, icon) {
     if (icon) return icon;
@@ -293,14 +361,14 @@ export default function AIChatView({ activeChatId, onSelectChat, workspace, user
           </div>
           <div>
             <h2 className="text-sm font-bold text-on-surface flex items-center gap-2">
-              {currentChat?.title || 'Motion AI'}
+              {currentChat?.title || 'Groupify AI'}
               <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-primary/10 text-primary font-medium">
                 <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
-                Gemini 3.8 Flash • PDF &amp; Slides
+                Can act in your workspace
               </span>
             </h2>
             <p className="text-[11px] text-on-surface-variant">
-              PDF &amp; Presentation Analysis • Exam Generation • Intelligent Workspace Assistant
+              Ask about your team’s work, or ask me to create and update projects, pages and tasks. You approve every change.
             </p>
           </div>
         </div>
@@ -324,9 +392,9 @@ export default function AIChatView({ activeChatId, onSelectChat, workspace, user
             <div className="w-16 h-16 rounded-2xl bg-primary/10 text-primary flex items-center justify-center mx-auto mb-4 shadow-inner">
               <span className="material-symbols-outlined text-3xl">auto_awesome</span>
             </div>
-            <h3 className="text-xl font-bold text-on-surface mb-2">How can I help you today?</h3>
+            <h3 className="text-xl font-bold text-on-surface mb-2">What can I do for your team?</h3>
             <p className="text-sm text-on-surface-variant mb-8 max-w-md mx-auto">
-              Upload a PDF, PowerPoint presentation, or document to summarize, ask questions, or generate instant exam quizzes.
+              I can see your projects, pages and tasks. Ask a question, or tell me what to create, assign or update — I’ll show you the changes before anything happens.
             </p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-left">
@@ -386,6 +454,18 @@ export default function AIChatView({ activeChatId, onSelectChat, workspace, user
                   ) : (
                     <div>
                       {renderMarkdownSnippet(msg.text)}
+                      {msg.sources?.length ? (
+                        <div className="agent-sources" aria-label="Sources">
+                          <span>Based on</span>
+                          {msg.sources.map((source, index) => (
+                            <a key={index} href={source.href}>
+                              <span className="material-symbols-outlined">{source.kind === 'P' ? 'folder' : source.kind === 'G' ? 'description' : 'task_alt'}</span>
+                              {source.title}
+                            </a>
+                          ))}
+                        </div>
+                      ) : null}
+                      {msg.actions?.length ? <AgentActionCard chatId={currentChat.id} message={msg} /> : null}
                       <div className="mt-3 pt-2 border-t border-outline-variant/10 flex items-center justify-end gap-2 text-xs text-on-surface-variant">
                         <button
                           type="button"
@@ -419,7 +499,7 @@ export default function AIChatView({ activeChatId, onSelectChat, workspace, user
                   <span className="w-2 h-2 rounded-full bg-primary animate-bounce"></span>
                   <span className="w-2 h-2 rounded-full bg-primary animate-bounce [animation-delay:0.2s]"></span>
                   <span className="w-2 h-2 rounded-full bg-primary animate-bounce [animation-delay:0.4s]"></span>
-                  <span className="text-xs text-on-surface-variant ml-1 font-medium">Motion AI is analyzing the document and drafting a response...</span>
+                  <span className="text-xs text-on-surface-variant ml-1 font-medium">Groupify AI is looking at your workspace…</span>
                 </div>
               </div>
             )}
@@ -521,7 +601,7 @@ export default function AIChatView({ activeChatId, onSelectChat, workspace, user
           {/* Parsing Spinner */}
           {isParsingFile && (
             <div className="flex items-center gap-2 p-2.5 rounded-lg bg-surface-container-high border border-outline-variant/30 text-xs text-on-surface-variant">
-              <span className="material-symbols-outlined text-base text-primary animate-spin">progress_activity</span>
+              <GroupifyLoader size={16} label="Reading file" />
               <span>Reading and extracting document content... Please wait</span>
             </div>
           )}
@@ -584,7 +664,7 @@ export default function AIChatView({ activeChatId, onSelectChat, workspace, user
           </form>
 
           <p className="text-[10px] text-center text-on-surface-variant/60">
-            Powered by Google Gemini 3.8 Flash • Supports PDFs, PowerPoint presentations, and documents for automated analysis and quiz generation
+            Powered by Cloudflare Workers AI Free • Supports text-based PDFs, PowerPoint presentations, and documents for analysis and quiz generation
           </p>
         </div>
       </div>
@@ -592,15 +672,3 @@ export default function AIChatView({ activeChatId, onSelectChat, workspace, user
   );
 }
 
-function generateSmartAIResponse(prompt, workspace, file) {
-  if (file) {
-    return `### Document summary for "${file.name}":
-- **File Type:** ${file.fileTypeLabel || 'Document'}
-- **Size:** ${(file.size / 1024).toFixed(1)} KB.
-- Document content has been extracted and prepared.
-
-Please verify your network connection and Gemini API key to utilize full intelligent document analysis.`;
-  }
-
-  return `Hello! I am Motion AI. You can attach any PDF, PowerPoint presentation, or document, and I will summarize it or generate quiz questions based on it.`;
-}

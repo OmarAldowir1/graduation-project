@@ -1,59 +1,53 @@
-# In-page AI — administrator setup
+# Cloudflare Workers AI Free setup
 
-Users only open the AI assistant, type a request and click Generate draft. They never visit Colab, edit JSON or provide their own API key. Drafts are validated on both the server and client; Apply appends selected blocks, preserving existing content/title. Refine sends the last draft with the new request; Discard and Stop never modify a page. Undo removes only an unchanged last AI batch.
+Motion uses one fixed Cloudflare Workers AI model, `@cf/meta/llama-3.3-70b-instruct-fp8-fast`, for page drafts, chat, and editor text actions. In local development, the Vite server on your Mac reads the token from `supabase/functions/.env` and verifies the user's Supabase session before calling Cloudflare. The token is never sent to the browser or Supabase in this mode. Hosted deployments can instead use authenticated Supabase Edge Functions, but only after the owner explicitly approves storing the token there. There is no paid model fallback, AI Gateway, automatic retry, or model choice from the browser.
 
-## Cost and privacy boundary
+## Keep usage at zero cost
 
-Only `gemini-3.5-flash-lite` at Google's standard `generateContent` endpoint is allowlisted. No configurable model, provider fallback, automatic retry, search/maps grounding, code execution or caching is used. Quota errors stop generation. The key is sent in an HTTP header server-side, never a browser variable or URL. Do not enable Google Cloud billing or attach payment details. Keep Supabase on its existing free plan; do not upgrade it for this feature. Free services have quotas and availability limits. The older 2.5 model returned 404 for this project; Google's current deprecation guidance restricts 2.5 access for new projects and recommends 3.5 Flash-Lite, which currently has a free input/output tier.
+Create or select a Cloudflare account on the **Workers Free** plan. Do not upgrade to Workers Paid, enable prepaid AI Gateway credits, or connect this app to an account that is already paid. Cloudflare's Free plan includes 10,000 Neurons per day; after that, requests fail until the allocation resets at 00:00 UTC. The account owner must confirm the plan in the dashboard before setting `MOTION_AI_CLOUDFLARE_PLAN=workers-free`. This variable is an owner declaration, not a technical billing check. If the Cloudflare account is upgraded later, disable the functions immediately by changing the declaration to `disabled` or removing the token.
 
-**Important:** Google uses the same API endpoint for free and paid accounts. Code cannot prove from an API key whether billing is linked. The server requires the owner to attest that the Google project has no linked billing before enabling requests. That attestation is not a billing-status verification. If billing is later linked, immediately remove the key or set the mode back to `disabled`; application limits alone cannot guarantee zero charges on a billed account. There is no promise that a provider's free offering will remain unchanged.
+Keep the Supabase project on its Free plan too. Free offerings and limits can change. Text from prompts and explicitly attached documents is sent to Cloudflare for inference; check its data policy before sending private material. PDFs are converted to selectable text in the browser. Scanned PDFs need OCR first.
 
-Google's free-tier inputs/outputs may be used to improve its products. A notice appears before Generate. Current page text is excluded by default and only included when the user selects its checkbox. No prompts, page contents or responses are stored in the quota table or application logs. Do not share sensitive/confidential page content with the free provider.
+## 1. Get Cloudflare credentials
 
-## 1. Create a free-tier key (owner)
+In the [Cloudflare dashboard](https://dash.cloudflare.com/), open **Workers AI → Use REST API**. Copy the **Account ID** and create a **Workers AI API Token** using Cloudflare's template. The token is a secret. Do not put it in `.env`, a `VITE_*` variable, GitHub, or chat. The Account ID itself is not a secret.
 
-1. Sign in at https://aistudio.google.com/api-keys and inspect Projects/Billing.
-2. Select or create a project that shows **Free tier**, with **no linked Cloud Billing account**. If offered payment, credits requiring billing, an upgrade or a paid subscription, stop.
-3. Create a key named `Motion free page AI`. Creating a credential and accepting any new terms require the owner's confirmation. Do not paste the key into chat or commit it to GitHub.
-4. If AI Studio shows an unknown error or no projects, resolve that account/setup problem first. Do not bypass it with a billed project.
+## 2. Local-only AI (token stays on your Mac)
 
-## 2. Add quota storage
+Copy `supabase/functions/.env.example` to `supabase/functions/.env` and set `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_AI_TOKEN`, and `MOTION_AI_CLOUDFLARE_PLAN=workers-free` after confirming Workers Free in Cloudflare. The file is ignored by Git. Run `npm run dev` and open the Vite URL on this Mac. The development server handles AI requests locally, checks the signed-in user with Supabase, and reserves the shared project quota. No Cloudflare token is sent to Supabase. Do not use `npm run preview` or a production build to test this local-only path; those use the hosted functions.
 
-In your own Supabase project's SQL Editor, run `sql/page-ai-quota.sql` once. It is additive: a usage-counter table and an authenticated reservation function. Limits are **2 attempts/minute/user, 10/day/user and 20/day/project**, reset daily in UTC. All admitted attempts count even if Google rejects them. No automatic retries. Limits are persistent/atomic across Edge Function instances. Missing quota storage fails closed. These conservative demo limits are not a claim about Google's current quotas.
+The local AI server rejects non-loopback network clients. Keep the token out of the root `.env`, `VITE_*` variables, GitHub, and chat. If you close the terminal running Vite, AI is unavailable until you restart it.
 
-## 3. Deploy the Edge Function
+## 3. Prepare Supabase quota
 
-Using the official Supabase CLI (installation is a separate owner action; no Homebrew required):
+In the same Supabase project used by the app, run `sql/page-ai-quota.sql` in the SQL Editor if it has not already been applied. Then run `sql/cloudflare-ai-quota.sql`. The latter replaces the reservation function with limits shared by page drafts, chat, and editor actions: 4 attempts per minute per user, 50 per day per user, and 100 per day across the project. Failed attempts admitted by the function count. Cloudflare's own free allowance can run out before these limits; it is the final hard stop on a Workers Free account.
+
+The quota migration is needed for both local and hosted AI. For a hosted deployment only, and only with the owner's explicit approval to share the token with Supabase, set these **Supabase → Edge Functions → Secrets**:
+
+| Secret | Value |
+| --- | --- |
+| `CLOUDFLARE_ACCOUNT_ID` | Account ID from Workers AI |
+| `CLOUDFLARE_AI_TOKEN` | Workers AI API token |
+| `MOTION_AI_CLOUDFLARE_PLAN` | `workers-free`, only after confirming the account is on Workers Free |
+| `MOTION_AI_ALLOWED_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173`; add the exact deployed website origin if needed |
+
+Do not set these Supabase secrets for local-only AI. Supabase supplies `SUPABASE_URL` and `SUPABASE_ANON_KEY` to its function runtime. Remove old Gemini secrets only after confirming no other client uses them.
+
+## 4. Optional hosted function deployment
+
+From the project folder, using an authenticated Supabase CLI:
 
 ```sh
 npx supabase login
 npx supabase link --project-ref YOUR_PROJECT_REF
-npx supabase functions deploy page-ai --project-ref YOUR_PROJECT_REF
+npx supabase functions deploy cloudflare-page-ai --project-ref YOUR_PROJECT_REF
+npx supabase functions deploy text-ai --project-ref YOUR_PROJECT_REF
 ```
 
-The function keeps this project's gateway JWT verification enabled (`verify_jwt = true`) and **additionally verifies the bearer token with Supabase Auth on every POST**. Do not remove those checks. It checks page access through the caller's existing RLS policies and uses no service-role credential. Its dependencies are local files under `supabase/functions/`. Projects using a different signing-key setup may need a reviewed authentication configuration; do not simply disable verification to bypass an error.
+Both functions keep gateway JWT verification enabled in `supabase/config.toml`, verify the bearer token with Supabase Auth, and reserve quota before contacting Cloudflare. The page function additionally verifies page access through the caller's RLS policies. Do not disable JWT verification to work around an authentication error.
 
-## 4. Set server secrets securely
+## 5. Check it
 
-In Supabase → Edge Functions → Secrets, enter:
+Run `npm run test:ai` and `npm run build`. For local-only AI, start `npm run dev`, sign in, create a page, request a draft, and try chat and a text editor action. The automated tests mock Cloudflare and cannot establish that your live account is Free or that its token works. If local AI says it is not configured, check the ignored local environment file and restart Vite. If hosted AI says it is not configured, its Supabase secrets are not set. If either path reaches a free limit, wait for the UTC reset; no paid service is selected.
 
-| Secret | Value |
-| --- | --- |
-| `GEMINI_API_KEY` | The key from your verified free, unbilled Google project |
-| `MOTION_AI_BILLING_MODE` | `unlinked-free-tier` **only after the check above**; otherwise `disabled` |
-| `MOTION_AI_ALLOWED_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` for local development; add your exact website origin when deployed |
-
-Supabase supplies `SUPABASE_URL` and `SUPABASE_ANON_KEY` to its runtime. Never add the Gemini key to `VITE_*`, the frontend `.env`, screenshots, logs, GitHub or source code. Local function secrets, if needed, belong in the ignored `supabase/functions/.env`.
-
-## 5. Test activation
-
-Sign into Motion, open a page and ask: “Create a React project plan with a heading, checklist and milestones table.” Check the preview, refine, apply, reload, and undo. Test a second user cannot generate for an inaccessible page. Quota exhaustion should show a friendly limit message, never switch providers. Stop hides late results; a request already accepted by the server may still count toward quota.
-
-Run `npm run test:ai` and `npm run check`. The test suite uses mocked provider responses; it cannot verify a live Google account or its billing status. No live generation should be claimed until the real key, migration and deployment are verified.
-
-## Official references
-
-- Google free-tier pricing/data usage: https://ai.google.dev/gemini-api/docs/pricing
-- Gemini structured output: https://ai.google.dev/gemini-api/docs/structured-output
-- Supabase secrets: https://supabase.com/docs/guides/functions/secrets
-- Supabase function authentication: https://supabase.com/docs/guides/functions/auth
+Official references: [Workers AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/), [REST API setup](https://developers.cloudflare.com/workers-ai/get-started/rest-api/), [JSON mode](https://developers.cloudflare.com/workers-ai/features/json-mode/), [Supabase function secrets](https://supabase.com/docs/guides/functions/secrets).

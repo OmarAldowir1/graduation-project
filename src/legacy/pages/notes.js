@@ -8,7 +8,7 @@ import { getPages, getPage, createPage, updatePage, togglePageFavorite, archiveP
 import { escapeHtml, sanitizeHtml } from '../../lib/sanitize.js';
 
 export async function renderNotes(container) {
-  setBreadcrumb('Notes');
+  setBreadcrumb('All pages');
 
   const workspaceId = AppState.workspace?.id;
   if (!workspaceId) {

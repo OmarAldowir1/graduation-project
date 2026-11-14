@@ -1,6 +1,6 @@
-import { requestInput } from "./lib/dialogs.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, showToast } from './legacy/app.js';
+import { AppState, showToast, handleSignOut } from './legacy/app.js';
+import { requestConfirmation } from './lib/dialogs.js';
 import { getSession, onAuthStateChange, supabase } from './lib/supabase.js';
 import { isSupabaseConfigured } from './lib/config.js';
 import { escapeHtml } from './lib/sanitize.js';
@@ -19,16 +19,32 @@ import {
   markNotificationRead,
   markAllNotificationsRead,
   acceptWorkspaceInvitation,
-  createWorkspace
+  createWorkspace,
+  getWorkspaceMembers
 } from './lib/queries.js';
+import { requestNewTask } from './lib/taskDetails.js';
+import { buildProjectIndex, listProjects } from './lib/projects.js';
+import { startNewProject } from './lib/projectActions.js';
+import { loadTeamTemplates } from './lib/pageTools.js';
+import { describeNotification } from './lib/notificationText.js';
 import Login, { PasswordReset } from './components/Login.jsx';
 import TeamChat from './components/TeamChat.jsx';
+import MeetingView from './components/MeetingView.jsx';
 import AIChatView from './components/AIChatView.jsx';
 import AIPageSidebar from './components/AIPageSidebar.jsx';
 import NotionAIFace from './components/NotionAIFace.jsx';
+import PresenceStack from './components/PresenceStack.jsx';
+import GroupifyLogo, { GroupifyLoader } from './components/GroupifyLogo.jsx';
+import { loaderHtml } from './lib/loader.js';
+import SharedPage from './components/SharedPage.jsx';
+import Landing from './landing/Landing.jsx';
 import Modal, { PromptDialog } from './components/Modal.jsx';
 import { getStoredChats, createNewAIChat, deleteAIChat, formatChatDate } from './lib/aiChatStore.js';
+import { SidebarTree, SidebarProjectsList } from './components/SidebarTree.jsx';
+import { getDraggedPageId } from './lib/sidebarTreeHelpers.js';
 import './App.css';
+import './ui-refresh.css';
+import './groupify.css';
 
 import { renderDashboard } from './legacy/pages/dashboard.js';
 import { renderNotes } from './legacy/pages/notes.js';
@@ -37,6 +53,28 @@ import { renderKanban } from './legacy/pages/kanban.js';
 import { renderDatabase } from './legacy/pages/database.js';
 import { renderSettings } from './legacy/pages/settings.js';
 import { renderProfile } from './legacy/pages/profile.js';
+import { renderProject } from './legacy/pages/project.js';
+
+const PRESENCE_COLORS = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#8b5cf6', '#14b8a6'];
+function presenceColor(id = '') {
+  let hash = 0;
+  for (const char of String(id)) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
+  return PRESENCE_COLORS[hash % PRESENCE_COLORS.length];
+}
+
+const ROUTE_TITLES = {
+  dashboard: 'Home',
+  chat: 'Team chat',
+  database: 'Table view',
+  notes: 'All pages',
+  settings: 'Settings',
+  profile: 'Profile'
+};
+function routeTitle(route, breadcrumb, aiChatTitle) {
+  if (route.path === 'kanban') return route.query.get('assignee') === 'mine' ? 'My tasks' : 'All tasks';
+  if (route.path === 'ai-chat') return aiChatTitle || 'Ask AI';
+  return ROUTE_TITLES[route.path] || breadcrumb || 'Home';
+}
 
 function parseHash() {
   const raw = window.location.hash.startsWith('#')
@@ -59,11 +97,12 @@ function LegacyRenderer({ renderer, routeKey, route }) {
   const ref = useRef(null);
 
   useEffect(() => {
-    if (!renderer || !ref.current) return;
+    if (!renderer || !ref.current) return undefined;
+    const node = ref.current;
 
     ref.current.innerHTML = `
       <div class="loading-overlay" style="position:relative; min-height:60vh;">
-        <div class="loading-spinner"></div>
+        ${loaderHtml()}
       </div>
     `;
 
@@ -79,6 +118,12 @@ function LegacyRenderer({ renderer, routeKey, route }) {
           </div>
         `;
       });
+    // Tear down anything a page attached outside its container (e.g. the editor's floating toolbars).
+    return () => {
+      node.__renderToken = null;
+      node.__notionEditor?.destroy();
+      node.__notionEditor = null;
+    };
     // routeKey changes whenever the route changes; keeping the dependency shape stable also avoids HMR hook warnings.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [renderer, routeKey]);
@@ -122,7 +167,7 @@ function SearchPalette({ isOpen, query, setQuery, results, loading, onClose, onS
               }
               if (event.key === 'Enter' && results[safeActiveIndex]) onSelect(results[safeActiveIndex]);
             }}
-            placeholder="Search pages and tasks..."
+            placeholder="Search projects, pages and tasks…"
             aria-label="Search pages and tasks"
           />
           <kbd>Esc</kbd>
@@ -135,22 +180,19 @@ function SearchPalette({ isOpen, query, setQuery, results, loading, onClose, onS
           ) : null}
           {!loading && !query.trim() ? (
             <>
-              <p className="command-palette-empty">Type to search your workspace.</p>
+              <p className="command-palette-empty">Search projects, pages and tasks — or jump straight in:</p>
               <div className="command-palette-actions">
-                <button type="button" className="command-palette-result" onClick={() => onAction('new-page')}>
-                  <span className="material-symbols-outlined">add</span><span className="command-palette-result-copy"><strong>New page</strong><small>Create from a template</small></span>
-                </button>
-                <button type="button" className="command-palette-result" onClick={() => onAction('notes')}>
-                  <span className="material-symbols-outlined">description</span><span className="command-palette-result-copy"><strong>Open Notes</strong><small>Browse your pages</small></span>
-                </button>
-                <button type="button" className="command-palette-result" onClick={() => onAction('kanban')}>
-                  <span className="material-symbols-outlined">view_kanban</span><span className="command-palette-result-copy"><strong>Open Kanban</strong><small>Manage tasks</small></span>
-                </button>
-                <button type="button" className="command-palette-result" onClick={() => onAction('database')}>
-                  <span className="material-symbols-outlined">local_library</span><span className="command-palette-result-copy"><strong>Open Library</strong><small>Browse workspace library</small></span>
+                <button type="button" className="command-palette-result" onClick={() => onAction('new-project')}>
+                  <span className="material-symbols-outlined">create_new_folder</span><span className="command-palette-result-copy"><strong>New project</strong><small>Plan, tasks and discussion in one place</small></span>
                 </button>
                 <button type="button" className="command-palette-result" onClick={() => onAction('new-task')}>
-                  <span className="material-symbols-outlined">add_task</span><span className="command-palette-result-copy"><strong>New task</strong><small>Add work to Kanban</small></span>
+                  <span className="material-symbols-outlined">add_task</span><span className="command-palette-result-copy"><strong>New task</strong><small>Add work and choose an owner</small></span>
+                </button>
+                <button type="button" className="command-palette-result" onClick={() => onAction('new-page')}>
+                  <span className="material-symbols-outlined">note_add</span><span className="command-palette-result-copy"><strong>New page</strong><small>Create from a template</small></span>
+                </button>
+                <button type="button" className="command-palette-result" onClick={() => onAction('kanban?assignee=mine')}>
+                  <span className="material-symbols-outlined">task_alt</span><span className="command-palette-result-copy"><strong>My tasks</strong><small>Everything assigned to you</small></span>
                 </button>
               </div>
             </>
@@ -164,11 +206,11 @@ function SearchPalette({ isOpen, query, setQuery, results, loading, onClose, onS
               onClick={() => onSelect(result)}
             >
               <span className="material-symbols-outlined" aria-hidden="true">
-                {result.type === 'task' ? 'check_circle' : 'description'}
+                {result.type === 'task' ? 'check_circle' : result.type === 'project' ? 'folder' : 'description'}
               </span>
               <span className="command-palette-result-copy">
                 <strong>{result.title || 'Untitled'}</strong>
-                <small>{result.type === 'task' ? 'Task' : 'Page'}</small>
+                <small>{result.type === 'task' ? 'Task' : result.type === 'project' ? 'Project' : 'Page'}</small>
               </span>
               <span className="material-symbols-outlined" aria-hidden="true">arrow_forward</span>
             </button>
@@ -182,14 +224,17 @@ function SearchPalette({ isOpen, query, setQuery, results, loading, onClose, onS
 function PageCreationDialog({ isOpen, onClose, onSubmit }) {
   const [title, setTitle] = useState('');
   const [template, setTemplate] = useState('blank');
+  const [teamTemplates, setTeamTemplates] = useState([]);
 
   useEffect(() => {
     if (!isOpen) return undefined;
+    let cancelled = false;
     const timer = window.setTimeout(() => {
       setTitle('');
       setTemplate('blank');
     }, 0);
-    return () => window.clearTimeout(timer);
+    loadTeamTemplates('page').then((items) => { if (!cancelled) setTeamTemplates(items); });
+    return () => { cancelled = true; window.clearTimeout(timer); };
   }, [isOpen]);
 
   const templates = {
@@ -197,7 +242,8 @@ function PageCreationDialog({ isOpen, onClose, onSubmit }) {
     meeting: { label: 'Meeting notes', pageType: 'note', content: { html: '<h2>Meeting notes</h2><p><strong>Date:</strong> </p><h3>Agenda</h3><ul><li></li></ul><h3>Decisions</h3><p></p><h3>Action items</h3><ul><li></li></ul>' } },
     brief: { label: 'Project brief', pageType: 'document', content: { html: '<h2>Project brief</h2><p><strong>Objective:</strong> </p><h3>Context</h3><p></p><h3>Scope</h3><ul><li></li></ul><h3>Success metrics</h3><ul><li></li></ul>' } },
     board: { label: 'Kanban board', pageType: 'kanban', content: { html: '<h2>Project board</h2><p>Use the Kanban view to track this work from idea to done.</p>' } },
-    database: { label: 'Project database', pageType: 'database', content: { html: '<h2>Project database</h2><p>Add pages below as rows and filter them by type or status.</p>' } }
+    database: { label: 'Project database', pageType: 'database', content: { html: '<h2>Project database</h2><p>Add pages below as rows and filter them by type or status.</p>' } },
+    ...Object.fromEntries(teamTemplates.map((item) => [`team:${item.id}`, { label: `★ ${item.title} (team template)`, pageType: 'note', content: { html: item.html || '' } }]))
   };
 
   const selected = templates[template];
@@ -261,241 +307,51 @@ function applyTheme(theme) {
   localStorage.setItem('motion-theme', theme);
 }
 
-function isPageDescendant(candidateId, ancestorId, pages) {
-  const byId = new Map(pages.map((page) => [page.id, page]));
-  const seen = new Set();
-  let current = byId.get(candidateId);
-  while (current?.parent_id && !seen.has(current.id)) {
-    if (current.parent_id === ancestorId) return true;
-    seen.add(current.id);
-    current = byId.get(current.parent_id);
-  }
-  return false;
-}
-
-function SidebarNotesTree({ pages, searchQuery, onPageMoved }) {
-  const [expandedIds, setExpandedIds] = useState(() => {
-    try {
-      const raw = localStorage.getItem('motion-notes-expanded-folders');
-      return raw ? new Set(JSON.parse(raw)) : new Set();
-    } catch {
-      return new Set();
-    }
-  });
-
-  const [dragOverId, setDragOverId] = useState(null);
-  const [rootDragOver, setRootDragOver] = useState(false);
-
-  const toggleFolder = useCallback((folderId, e) => {
-    e?.stopPropagation();
-    e?.preventDefault();
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(folderId)) {
-        next.delete(folderId);
-      } else {
-        next.add(folderId);
-      }
-      try {
-        localStorage.setItem('motion-notes-expanded-folders', JSON.stringify([...next]));
-      } catch {
-        // Ignore
-      }
-      return next;
-    });
-  }, []);
-
-  const hierarchy = useMemo(() => {
-    const map = new Map();
-    pages.forEach((p) => map.set(p.id, { ...p, children: [] }));
-    const roots = [];
-    pages.forEach((p) => {
-      const node = map.get(p.id);
-      if (p.parent_id && map.has(p.parent_id)) {
-        map.get(p.parent_id).children.push(node);
-      } else {
-        roots.push(node);
-      }
-    });
-    return roots;
-  }, [pages]);
-
-  const handleDragStart = (e, pageId) => {
-    e.dataTransfer.setData('text/plain', pageId);
-    e.dataTransfer.effectAllowed = 'move';
-  };
-
-  const handleDragOver = (e, targetId) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    if (dragOverId !== targetId) setDragOverId(targetId);
-  };
-
-  const handleDragLeave = (e, targetId) => {
-    if (dragOverId === targetId) setDragOverId(null);
-  };
-
-  const handleDrop = async (e, targetId) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragOverId(null);
-    const draggedId = e.dataTransfer.getData('text/plain');
-    if (!draggedId || draggedId === targetId) return;
-
-    const draggedPage = pages.find((p) => p.id === draggedId);
-    const targetPage = pages.find((p) => p.id === targetId);
-    if (!draggedPage || !targetPage) return;
-
-    if (isPageDescendant(targetPage.id, draggedPage.id, pages)) {
-      showToast('Cannot move a folder inside itself or one of its subpages', 'error');
-      return;
-    }
-
-    const { error } = await updatePage(draggedPage.id, { parent_id: targetPage.id });
-    if (error) {
-      showToast('Failed to move page: ' + error.message, 'error');
-      return;
-    }
-
-    setExpandedIds((prev) => {
-      const next = new Set(prev);
-      next.add(targetId);
-      try {
-        localStorage.setItem('motion-notes-expanded-folders', JSON.stringify([...next]));
-      } catch {
-        // Ignore
-      }
-      return next;
-    });
-
-    showToast(`Moved page into "${targetPage.title || 'Untitled'}" successfully`, 'success');
-    window.dispatchEvent(new CustomEvent('motion:page-changed', { detail: draggedPage.id }));
-    onPageMoved?.();
-  };
-
-  const handleRootDrop = async (e) => {
-    e.preventDefault();
-    setRootDragOver(false);
-    const draggedId = e.dataTransfer.getData('text/plain');
-    const draggedPage = pages.find((p) => p.id === draggedId);
-    if (!draggedPage || !draggedPage.parent_id) return;
-
-    const { error } = await updatePage(draggedPage.id, { parent_id: null });
-    if (error) {
-      showToast('Failed to move page: ' + error.message, 'error');
-      return;
-    }
-    showToast('Moved page to root level', 'success');
-    window.dispatchEvent(new CustomEvent('motion:page-changed', { detail: draggedPage.id }));
-    onPageMoved?.();
-  };
-
-  const renderNode = (node, depth = 0) => {
-    const hasChildren = node.children && node.children.length > 0;
-    const isExpanded = expandedIds.has(node.id);
-    const isNested = depth > 0;
-    const isDragOver = dragOverId === node.id;
-
-    const term = searchQuery.trim().toLowerCase();
-    const matchesSearch = !term || (node.title || '').toLowerCase().includes(term);
-    const hasMatchingChild =
-      term &&
-      (function checkMatch(n) {
-        return (n.children || []).some((c) => (c.title || '').toLowerCase().includes(term) || checkMatch(c));
-      })(node);
-
-    if (term && !matchesSearch && !hasMatchingChild) {
-      return null;
-    }
-
-    return (
-      <div key={node.id} className="w-full">
-        <div
-          draggable
-          onDragStart={(e) => handleDragStart(e, node.id)}
-          onDragOver={(e) => handleDragOver(e, node.id)}
-          onDragLeave={(e) => handleDragLeave(e, node.id)}
-          onDrop={(e) => handleDrop(e, node.id)}
-          className={`flex items-center gap-1.5 px-2 py-1.5 rounded-md transition-all duration-150 group cursor-pointer ${isDragOver ? 'ring-2 ring-primary bg-primary/10' : 'hover:bg-surface-container-high'
-            } ${isNested ? 'text-[11px] text-on-surface-variant' : 'text-xs text-on-surface-variant font-medium'}`}
-          style={{ paddingLeft: `${depth * 0.75 + 0.35}rem` }}
-        >
-          {hasChildren ? (
-            <button
-              type="button"
-              onClick={(e) => toggleFolder(node.id, e)}
-              className="p-0.5 -ml-1 text-on-surface-variant/70 hover:text-on-surface flex items-center justify-center flex-shrink-0"
-              title={isExpanded ? 'Collapse folder' : 'Expand folder'}
-            >
-              <span className={`material-symbols-outlined text-[15px] note-folder-arrow ${isExpanded ? 'is-expanded rotate-90' : ''}`}>
-                chevron_right
-              </span>
-            </button>
-          ) : (
-            <span className="w-3.5 h-3.5 flex-shrink-0 -ml-1" />
-          )}
-
-          <a
-            href={`#editor/${node.id}`}
-            className="flex items-center gap-1.5 flex-1 min-w-0 text-inherit hover:text-on-surface no-underline"
-          >
-            {hasChildren ? (
-              <span className="material-symbols-outlined text-amber-500 text-[15px] flex-shrink-0">
-                {isExpanded ? 'folder_open' : 'folder'}
-              </span>
-            ) : (
-              <span className="material-symbols-outlined text-[14px] opacity-70 flex-shrink-0">
-                {node.page_type === 'kanban' ? 'view_kanban' : node.page_type === 'database' ? 'local_library' : 'description'}
-              </span>
-            )}
-            <span className={`truncate flex-1 ${isNested ? 'text-[11px] font-normal' : 'text-xs font-medium'}`}>
-              {node.title || 'Untitled'}
-            </span>
-          </a>
-        </div>
-
-        {hasChildren && (isExpanded || term) && (
-          <div className="border-l border-outline-variant/15 ml-2.5 pl-1 space-y-0.5">
-            {node.children.map((child) => renderNode(child, depth + 1))}
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  return (
-    <div className="space-y-1">
-      {/* Root drop zone */}
-      <div
-        onDragOver={(e) => {
-          e.preventDefault();
-          setRootDragOver(true);
-        }}
-        onDragLeave={() => setRootDragOver(false)}
-        onDrop={handleRootDrop}
-        className={`px-2 py-1.5 text-[10px] uppercase tracking-wider rounded-md border border-dashed transition-all flex items-center gap-1.5 cursor-pointer ${rootDragOver ? 'border-primary bg-primary/10 text-primary' : 'border-outline-variant/30 text-on-surface-variant/60'
-          }`}
-        title="Drop here to move page to root level"
-      >
-        <span className="material-symbols-outlined text-xs">drive_file_move</span>
-        <span className="truncate">Root pages (Drop here to un-nest)</span>
-      </div>
-
-      {hierarchy.length === 0 ? (
-        <p className="text-xs text-on-surface-variant/60 py-4 text-center">No pages found</p>
-      ) : (
-        hierarchy.map((rootNode) => renderNode(rootNode, 0))
-      )}
-    </div>
-  );
-}
-
 export default function App() {
   const [route, setRoute] = useState(() => parseHash());
   const [isBootstrapping, setIsBootstrapping] = useState(true);
   const [breadcrumb, setBreadcrumb] = useState(() => (parseHash().path === 'ai-chat' ? 'AI Chat' : 'Dashboard'));
   const [toast, setToast] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // On wide screens the sidebar is always shown (Groupify layout); below that it slides in.
+  const [isDesktop, setIsDesktop] = useState(() => window.matchMedia('(min-width: 1024px)').matches);
+  useEffect(() => {
+    const query = window.matchMedia('(min-width: 1024px)');
+    const onChange = (event) => setIsDesktop(event.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
+  // Desktop: the sidebar can slide away to give the page more room (remembered per browser).
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('groupify.sidebarCollapsed') === '1'; } catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('groupify.sidebarCollapsed', sidebarCollapsed ? '1' : '0'); } catch { /* storage unavailable */ }
+  }, [sidebarCollapsed]);
+  const sidebarShown = isDesktop ? !sidebarCollapsed : sidebarOpen;
+  const toggleSidebar = useCallback(() => {
+    if (window.matchMedia('(min-width: 1024px)').matches) setSidebarCollapsed((value) => !value);
+    else setSidebarOpen((value) => !value);
+  }, []);
+  const hideSidebar = () => (isDesktop ? setSidebarCollapsed(true) : setSidebarOpen(false));
+  // Ctrl/⌘ + \ shows or hides the sidebar.
+  useEffect(() => {
+    const onKey = (event) => {
+      if ((event.metaKey || event.ctrlKey) && event.key === '\\') { event.preventDefault(); toggleSidebar(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [toggleSidebar]);
+  // Phones: swipe the open sidebar to the left to close it.
+  const swipeRef = useRef(null);
+  const onSidebarTouchStart = (event) => { swipeRef.current = { x: event.touches[0].clientX, y: event.touches[0].clientY }; };
+  const onSidebarTouchEnd = (event) => {
+    const start = swipeRef.current; swipeRef.current = null;
+    if (!start || isDesktop) return;
+    const dx = event.changedTouches[0].clientX - start.x;
+    const dy = event.changedTouches[0].clientY - start.y;
+    if (dx < -60 && Math.abs(dx) > Math.abs(dy) * 1.5) setSidebarOpen(false);
+  };
   useEffect(() => {
     if (!sidebarOpen) return;
     const closeOnEscape = (event) => {
@@ -508,10 +364,16 @@ export default function App() {
   const [notifOpen, setNotifOpen] = useState(false);
   const [recentActivity, setRecentActivity] = useState([]);
   const [notifications, setNotifications] = useState([]);
-  const [onlineMemberCount, setOnlineMemberCount] = useState(0);
+  const [onlineMembers, setOnlineMembers] = useState([]);
+  const onlineMemberCount = onlineMembers.length;
   const [isOffline, setIsOffline] = useState(() => typeof navigator !== 'undefined' && !navigator.onLine);
   const [newPageModalOpen, setNewPageModalOpen] = useState(false);
   const [newWorkspaceModalOpen, setNewWorkspaceModalOpen] = useState(false);
+  useEffect(() => {
+    const openNewPage = () => setNewPageModalOpen(true);
+    window.addEventListener('motion:open-new-page', openNewPage);
+    return () => window.removeEventListener('motion:open-new-page', openNewPage);
+  }, []);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
@@ -524,23 +386,47 @@ export default function App() {
     const hash = parseHash();
     return hash.query.get('id') || getStoredChats()[0]?.id || null;
   });
-  const [sidebarMode, setSidebarMode] = useState(() => (parseHash().path === 'ai-chat' ? 'ai-chat' : 'pages'));
   const [aiChatSearchOpen, setAiChatSearchOpen] = useState(false);
   const [aiChatSearchQuery, setAiChatSearchQuery] = useState('');
-  const [inviteCardDismissed, setInviteCardDismissed] = useState(false);
   const [sidebarPages, setSidebarPages] = useState([]);
-  const [notesSearchQuery, setNotesSearchQuery] = useState('');
 
   // Force re-render when AppState changes
   const [appVersion, forceUpdate] = useState(0);
 
-  // Sync workspace pages for sidebar notes drawer
-  useEffect(() => {
-    if (!AppState.workspace?.id) return;
-    getPages(AppState.workspace.id).then(({ data }) => {
+  // Sidebar data: pages (for projects and other pages), my open tasks, team size.
+  const [myOpenTaskCount, setMyOpenTaskCount] = useState(0);
+  const [teamSize, setTeamSize] = useState(1);
+  const refreshSidebarPages = useCallback(() => {
+    const workspaceId = AppState.workspace?.id;
+    if (!workspaceId) return;
+    getPages(workspaceId).then(({ data }) => {
       if (data) setSidebarPages(data);
     });
-  }, [AppState.workspace?.id, appVersion]);
+    getTasks({ workspaceId }).then(({ data }) => {
+      const me = AppState.user?.id;
+      setMyOpenTaskCount((data || []).filter((task) => task.assignee_id === me && task.status !== 'done' && !task.completed).length);
+    });
+    getWorkspaceMembers(workspaceId).then(({ data }) => setTeamSize(Math.max(1, (data || []).length)));
+  }, []);
+  useEffect(() => {
+    refreshSidebarPages();
+  }, [AppState.workspace?.id, appVersion, route.raw, refreshSidebarPages]);
+  useEffect(() => {
+    window.addEventListener('motion:pages-changed', refreshSidebarPages);
+    window.addEventListener('motion:page-changed', refreshSidebarPages);
+    return () => {
+      window.removeEventListener('motion:pages-changed', refreshSidebarPages);
+      window.removeEventListener('motion:page-changed', refreshSidebarPages);
+    };
+  }, [refreshSidebarPages]);
+  const projectIndex = useMemo(() => buildProjectIndex(sidebarPages), [sidebarPages]);
+  const projects = useMemo(() => listProjects(sidebarPages), [sidebarPages]);
+  const otherPages = useMemo(() => sidebarPages.filter((page) => !projectIndex.get(page.id)), [sidebarPages, projectIndex]);
+  const activeProjectId = route.path === 'project'
+    ? route.segments[0] || null
+    : route.path === 'editor' ? projectIndex.get(route.segments[0]) || null : null;
+  const activePageId = route.path === 'editor' ? route.segments[0] || null : null;
+  const [otherPagesDragOver, setOtherPagesDragOver] = useState(false);
 
   const routeKey = useMemo(() => `${route.raw}:${AppState.workspace?.id || ''}:${appVersion}`, [route.raw, appVersion]);
 
@@ -549,6 +435,7 @@ export default function App() {
       dashboard: renderDashboard,
       notes: renderNotes,
       editor: renderEditor,
+      project: renderProject,
       kanban: renderKanban,
       database: renderDatabase,
       settings: renderSettings,
@@ -557,12 +444,69 @@ export default function App() {
     return map[route.path] || renderDashboard;
   }, [route.path]);
 
-  const showShell = !['login', 'reset-password'].includes(route.path);
+  const showShell = !['login', 'reset-password', 'share', 'welcome'].includes(route.path);
 
   // Apply theme on mount and changes
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  // Settings page (plain DOM) asks the app to switch theme or refresh the user's name/photo.
+  const [, setProfileVersion] = useState(0);
+  useEffect(() => {
+    const onSetTheme = (event) => {
+      const next = event.detail?.theme;
+      if (next !== 'light' && next !== 'dark') return;
+      setTheme(next);
+      if (AppState.user?.id) updateSettings(AppState.user.id, { theme: next }).catch(() => { });
+    };
+    const onProfileUpdated = () => setProfileVersion((value) => value + 1);
+    window.addEventListener('groupify:set-theme', onSetTheme);
+    window.addEventListener('groupify:profile-updated', onProfileUpdated);
+    return () => {
+      window.removeEventListener('groupify:set-theme', onSetTheme);
+      window.removeEventListener('groupify:profile-updated', onProfileUpdated);
+    };
+  }, []);
+
+  // Right-click (or the context-menu key) on the top-right picture opens a small menu.
+  const [avatarMenu, setAvatarMenu] = useState(null);
+  const avatarMenuRef = useRef(null);
+  const openAvatarMenu = (event) => {
+    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    setAvatarMenu({ top: Math.round(rect.bottom + 8), right: Math.max(8, Math.round(window.innerWidth - rect.right)) });
+  };
+  useEffect(() => {
+    if (!avatarMenu) return undefined;
+    avatarMenuRef.current?.querySelector('button')?.focus();
+    const close = () => setAvatarMenu(null);
+    const onPointer = (event) => { if (!avatarMenuRef.current?.contains(event.target)) close(); };
+    const onKey = (event) => {
+      if (event.key === 'Escape') { close(); document.getElementById('header-avatar')?.focus(); }
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        const items = [...(avatarMenuRef.current?.querySelectorAll('button') || [])];
+        const index = items.indexOf(document.activeElement);
+        items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
+        event.preventDefault();
+      }
+    };
+    document.addEventListener('pointerdown', onPointer, true);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', close);
+    window.addEventListener('hashchange', close);
+    return () => {
+      document.removeEventListener('pointerdown', onPointer, true);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', close);
+      window.removeEventListener('hashchange', close);
+    };
+  }, [avatarMenu]);
+  const avatarMenuEdit = () => { setAvatarMenu(null); window.location.hash = 'settings?section=account'; };
+  const avatarMenuLogout = async () => {
+    setAvatarMenu(null);
+    if (await requestConfirmation('Log out of Groupify on this device?')) handleSignOut();
+  };
 
   useEffect(() => {
     const handleOffline = () => {
@@ -631,6 +575,19 @@ export default function App() {
     };
   }, [currentUserId, currentWorkspaceId]);
 
+  const presenceRef = useRef(null);
+  const currentPageId = ['editor', 'project'].includes(route.path) ? route.segments[0] || null : null;
+  const currentPageTitle = currentPageId ? sidebarPages.find((page) => page.id === currentPageId)?.title || '' : '';
+  const presenceMeta = useMemo(() => ({
+    user_id: currentUserId,
+    name: AppState.profile?.name || AppState.user?.email?.split('@')[0] || 'Teammate',
+    avatar_url: AppState.profile?.avatar_url || '',
+    path: route.path,
+    page_id: currentPageId,
+    label: currentPageTitle
+  }), [currentUserId, route.path, currentPageId, currentPageTitle]);
+  const presenceMetaRef = useRef(presenceMeta);
+
   useEffect(() => {
     if (!isSupabaseConfigured || !currentUserId || !currentWorkspaceId) {
       return undefined;
@@ -638,21 +595,36 @@ export default function App() {
     const presenceChannel = supabase.channel(`motion-presence-${currentWorkspaceId}`, {
       config: { presence: { key: currentUserId } }
     });
-    const syncPresence = () => setOnlineMemberCount(Object.keys(presenceChannel.presenceState()).length);
+    const syncPresence = () => {
+      const state = presenceChannel.presenceState();
+      const people = Object.entries(state).map(([key, metas]) => {
+        const latest = [...(metas || [])].sort((a, b) => String(b.online_at || '').localeCompare(String(a.online_at || '')))[0] || {};
+        return { ...latest, user_id: latest.user_id || key, name: latest.name || 'Teammate', color: presenceColor(latest.user_id || key) };
+      }).sort((a, b) => a.name.localeCompare(b.name));
+      setOnlineMembers(people);
+    };
     presenceChannel.on('presence', { event: 'sync' }, syncPresence);
     presenceChannel.on('presence', { event: 'join' }, syncPresence);
     presenceChannel.on('presence', { event: 'leave' }, syncPresence);
     presenceChannel.subscribe(async (status) => {
       if (status === 'SUBSCRIBED') {
-        await presenceChannel.track({ user_id: currentUserId, online_at: new Date().toISOString() });
+        presenceRef.current = presenceChannel;
+        await presenceChannel.track({ ...presenceMetaRef.current, online_at: new Date().toISOString() });
         syncPresence();
       }
     });
     return () => {
+      presenceRef.current = null;
       supabase.removeChannel(presenceChannel);
-      setOnlineMemberCount(0);
+      setOnlineMembers([]);
     };
   }, [currentUserId, currentWorkspaceId]);
+
+  // Tell teammates where you are whenever you move around.
+  useEffect(() => {
+    presenceMetaRef.current = presenceMeta;
+    presenceRef.current?.track({ ...presenceMeta, online_at: new Date().toISOString() }).catch(() => {});
+  }, [presenceMeta]);
 
   const openSearch = useCallback(() => {
     setSearchQuery('');
@@ -691,7 +663,7 @@ export default function App() {
               return searchable.includes(term);
             })
             .slice(0, 8)
-            .map((page) => ({ id: page.id, title: page.title || 'Untitled page', type: 'page' }));
+            .map((page) => ({ id: page.id, title: page.title || 'Untitled page', type: page.page_type === 'project' ? 'project' : 'page' }));
           const tasks = (tasksResult.data || [])
             .filter((task) => [task.title || '', task.status || '', task.priority || '', ...(task.tags || [])].join(' ').toLowerCase().includes(term))
             .slice(0, 8)
@@ -719,8 +691,7 @@ export default function App() {
       setRoute(nextRoute);
       setSidebarOpen(false); // Close sidebar on navigation (mobile)
       if (nextRoute.path === 'ai-chat') {
-        setBreadcrumb('AI Chat');
-        setSidebarMode('ai-chat');
+        setBreadcrumb('Ask AI');
         const qId = nextRoute.query.get('id');
         if (qId) setActiveAIChatId(qId);
       }
@@ -747,7 +718,6 @@ export default function App() {
     const newChat = createNewAIChat('New chat');
     setAiChats(getStoredChats());
     setActiveAIChatId(newChat.id);
-    setSidebarMode('ai-chat');
     window.location.hash = `ai-chat?id=${encodeURIComponent(newChat.id)}`;
   }, []);
 
@@ -796,7 +766,13 @@ export default function App() {
           AppState.workspaces = [];
           AppState.workspace = null;
           AppState.isLoading = false;
-          if (!['login', 'reset-password'].includes(parseHash().path)) window.location.hash = 'login';
+          {
+            // Signed-out visitors to the main address see the homepage; deep links go to sign-in.
+            const signedOutPath = parseHash().path;
+            if (!['login', 'reset-password', 'share', 'welcome'].includes(signedOutPath)) {
+              window.location.hash = ['dashboard', ''].includes(signedOutPath) && !window.location.hash.replace('#', '').startsWith('dashboard/') ? 'welcome' : 'login';
+            }
+          }
           return;
         }
         const session = await getSession();
@@ -810,7 +786,13 @@ export default function App() {
           AppState.workspaces = [];
           AppState.workspace = null;
           AppState.isLoading = false;
-          if (!['login', 'reset-password'].includes(parseHash().path)) window.location.hash = 'login';
+          {
+            // Signed-out visitors to the main address see the homepage; deep links go to sign-in.
+            const signedOutPath = parseHash().path;
+            if (!['login', 'reset-password', 'share', 'welcome'].includes(signedOutPath)) {
+              window.location.hash = ['dashboard', ''].includes(signedOutPath) && !window.location.hash.replace('#', '').startsWith('dashboard/') ? 'welcome' : 'login';
+            }
+          }
           return;
         }
 
@@ -866,7 +848,7 @@ export default function App() {
 
     bootstrap();
 
-    const { data } = isSupabaseConfigured ? onAuthStateChange((event) => {
+    const { data } = isSupabaseConfigured ? onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT') {
         AppState.user = null;
         AppState.profile = null;
@@ -874,7 +856,18 @@ export default function App() {
         AppState.workspace = null;
         window.location.hash = 'login';
       }
-      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+      // Supabase re-emits SIGNED_IN whenever the tab becomes visible again, and
+      // TOKEN_REFRESHED hourly. Reloading everything then would flash the loading
+      // screen and wipe open forms and drafts, so only bootstrap for a new user.
+      if (event === 'TOKEN_REFRESHED') {
+        if (session?.user) AppState.user = session.user;
+        return;
+      }
+      if (event === 'SIGNED_IN' && session?.user?.id && session.user.id === AppState.user?.id) {
+        AppState.user = session.user;
+        return;
+      }
+      if (event === 'SIGNED_IN') {
         // Leave the SDK's auth notification/lock before making more auth calls.
         window.clearTimeout(authBootstrapTimer);
         authBootstrapTimer = window.setTimeout(() => { void bootstrap(); }, 0);
@@ -946,6 +939,8 @@ export default function App() {
   }, [notifOpen]);
 
   if (!showShell) {
+    if (route.path === 'share') return <SharedPage token={route.segments[0]} />;
+    if (route.path === 'welcome') return <Landing signedIn={Boolean(AppState.user)} />;
     if (route.path === 'reset-password') return <PasswordReset />;
     return <Login isBootstrapping={isBootstrapping} />;
   }
@@ -970,7 +965,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden">
+    <div className={`flex h-screen overflow-hidden ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       {/* Mobile Sidebar Overlay */}
       <div
         className={`sidebar-overlay ${sidebarOpen ? 'active' : ''}`}
@@ -980,107 +975,63 @@ export default function App() {
       {/* Sidebar */}
       <aside
         id="sidebar"
-        inert={!sidebarOpen}
+        inert={!sidebarShown}
+        onTouchStart={onSidebarTouchStart}
+        onTouchEnd={onSidebarTouchEnd}
         aria-label="Workspace navigation"
-        className={`h-screen w-64 flex-shrink-0 bg-[#f2f4f3] dark:bg-stone-900 flex flex-col py-6 px-4 ${sidebarOpen ? 'sidebar-open' : ''}`}
+        className={`motion-sidebar h-screen w-64 flex-shrink-0 flex flex-col py-6 px-4 ${sidebarOpen ? 'sidebar-open' : ''}`}
       >
         <button
           type="button"
-          className="absolute top-3 right-3 flex items-center justify-center w-8 h-8 rounded-lg hover:bg-surface-container-high"
+          className="sidebar-hide-btn absolute top-3 right-3 flex items-center justify-center w-8 h-8 rounded-lg hover:bg-surface-container-high"
           aria-label="Close sidebar"
-          onClick={() => setSidebarOpen(false)}
+          title="Hide sidebar (Ctrl/⌘ + \)"
+          onClick={hideSidebar}
         >
-          <span className="material-symbols-outlined">close</span>
+          <span className="material-symbols-outlined">{isDesktop ? 'left_panel_close' : 'close'}</span>
         </button>
-        <div className="flex items-center gap-3 mb-8 px-2">
-          <div className="w-8 h-8 rounded-lg bg-primary-container flex items-center justify-center">
-            <span className="material-symbols-outlined text-primary text-xl">monochrome_photos</span>
-          </div>
-          <div>
-            <h1 className="text-lg font-bold tracking-tighter text-[#2d3433] dark:text-stone-100">Motion</h1>
-            {AppState.workspaces.length > 1 ? (
-              <select
-                id="workspace-switcher"
-                className="workspace-switcher font-['Inter'] tracking-tight text-xs text-[#5f5e5e] dark:text-stone-400"
-                value={AppState.workspace?.id || ''}
-                onChange={handleWorkspaceChange}
-                aria-label="Switch workspace"
-              >
-                {AppState.workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-              </select>
-            ) : (
-              <p className="font-['Inter'] tracking-tight text-xs text-[#5f5e5e] dark:text-stone-400" id="sidebar-workspace-name">{workspaceName}</p>
-            )}
-            {onlineMemberCount > 0 ? <p className="mt-1 text-[10px] text-primary flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-primary"></span>{onlineMemberCount} online</p> : null}
-          </div>
+        <div className="sidebar-brand">
+          <a href="#dashboard" className="sidebar-logo" aria-label="Groupify home"><GroupifyLogo height={24} color="#F5F7F8" /></a>
+          {AppState.workspaces.length > 1 ? (
+            <select
+              id="workspace-switcher"
+              className="workspace-switcher sidebar-team"
+              value={AppState.workspace?.id || ''}
+              onChange={handleWorkspaceChange}
+              aria-label="Switch team"
+            >
+              {AppState.workspaces.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
+            </select>
+          ) : (
+            <p className="sidebar-team" id="sidebar-workspace-name">{workspaceName}</p>
+          )}
+          {onlineMemberCount > 1 ? <p className="sidebar-online"><span></span>{onlineMemberCount - 1} teammate{onlineMemberCount === 2 ? '' : 's'} online</p> : null}
         </div>
 
-        {/* Notion-Style Top Navigation Bar (Home, Chat, Notes, Inbox, Search) */}
-        <div className="notion-top-nav">
-          <button
-            type="button"
-            className={`notion-nav-btn ${sidebarMode === 'pages' ? 'is-active' : ''}`}
-            title="Home"
-            aria-label="Home"
-            onClick={() => setSidebarMode('pages')}
-          >
-            <span className="material-symbols-outlined text-lg">home</span>
-            {sidebarMode === 'pages' && <span className="notion-nav-label">Home</span>}
-          </button>
+        <button type="button" className="sidebar-search" onClick={openSearch} aria-label="Search (Ctrl+K)">
+          <span className="material-symbols-outlined">search</span>
+          <span>Search</span>
+          <kbd>⌘K</kbd>
+        </button>
 
-          <button
-            type="button"
-            className={`notion-nav-btn ${sidebarMode === 'ai-chat' ? 'is-active' : ''}`}
-            title="Chat"
-            aria-label="Chat"
-            onClick={() => setSidebarMode('ai-chat')}
-          >
-            <span className="material-symbols-outlined text-lg">chat</span>
-            {sidebarMode === 'ai-chat' && <span className="notion-nav-label">Chat</span>}
-          </button>
+        <nav className="sidebar-nav" aria-label="Main">
+          {[
+            { key: 'home', href: '#dashboard', icon: 'home', label: 'Home', active: route.path === 'dashboard' },
+            { key: 'mine', href: '#kanban?assignee=mine', icon: 'task_alt', label: 'My tasks', active: route.path === 'kanban' && route.query.get('assignee') === 'mine' },
+            { key: 'chat', href: '#chat', icon: 'forum', label: 'Team chat', active: route.path === 'chat' },
+            { key: 'ai', href: '#ai-chat', icon: 'auto_awesome', label: 'Ask AI', active: route.path === 'ai-chat' }
+          ].map((item) => (
+            <a key={item.key} href={item.href} className={`sidebar-link ${item.active ? 'is-active' : ''}`} aria-current={item.active ? 'page' : undefined}>
+              <span className="material-symbols-outlined">{item.icon}</span>
+              <span>{item.label}</span>
+              {item.key === 'mine' && myOpenTaskCount > 0 ? <span className="sidebar-count">{myOpenTaskCount}</span> : null}
+            </a>
+          ))}
+        </nav>
 
-          <button
-            type="button"
-            className={`notion-nav-btn ${sidebarMode === 'notes' ? 'is-active' : ''}`}
-            title="Notes"
-            aria-label="Notes"
-            onClick={() => setSidebarMode('notes')}
-          >
-            <span className="material-symbols-outlined text-lg">description</span>
-            {sidebarMode === 'notes' && <span className="notion-nav-label">Notes</span>}
-          </button>
-
-          <button
-            type="button"
-            className={`notion-nav-btn ${sidebarMode === 'inbox' ? 'is-active' : ''}`}
-            title="Notifications"
-            aria-label="Notifications"
-            onClick={() => setSidebarMode((prev) => (prev === 'inbox' ? 'pages' : 'inbox'))}
-          >
-            <span className="material-symbols-outlined text-lg">inbox</span>
-            {sidebarMode === 'inbox' && <span className="notion-nav-label">Inbox</span>}
-            {notifications.some((n) => !n.read_at) && (
-              <span className="notion-badge-dot">
-                {notifications.filter((n) => !n.read_at).length > 9 ? '9+' : notifications.filter((n) => !n.read_at).length}
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            className="notion-nav-btn"
-            title="Search (Ctrl+K)"
-            aria-label="Search"
-            onClick={openSearch}
-          >
-            <span className="material-symbols-outlined text-lg">search</span>
-          </button>
-        </div>
-
-        {/* Conditional Sidebar: AI Chat Panel vs Standard Workspace Navigation */}
-        {sidebarMode === 'ai-chat' ? (
+        {route.path === 'ai-chat' ? (
           <div className="notion-ai-sidebar">
-            <h3 className="notion-ai-section-title">Motion AI</h3>
+            <h3 className="notion-ai-section-title">Groupify AI</h3>
             <div className="notion-ai-agents-row">
               <button
                 type="button"
@@ -1092,7 +1043,7 @@ export default function App() {
                 <div className="notion-ai-avatar-circle">
                   <span className="material-symbols-outlined text-xl">auto_awesome</span>
                 </div>
-                <span>Motion AI</span>
+                <span>Groupify AI</span>
               </button>
 
               <button
@@ -1190,187 +1141,119 @@ export default function App() {
                   ))
               )}
             </div>
+          </div>
+        ) : null}
 
-            {/* Bottom Invite Card */}
-            {!inviteCardDismissed && (
-              <div className="notion-ai-invite-card">
-                <div className="notion-ai-invite-card-header">
-                  <span className="notion-ai-invite-card-title">
-                    <span className="material-symbols-outlined text-sm">person_add</span>
-                    Invite members
-                  </span>
-                  <button
-                    type="button"
-                    className="text-on-surface-variant/60 hover:text-on-surface text-xs"
-                    onClick={() => setInviteCardDismissed(true)}
-                    aria-label="Dismiss"
-                  >
-                    <span className="material-symbols-outlined text-xs">close</span>
-                  </button>
-                </div>
-                <p className="notion-ai-invite-card-desc">Collaborate with your team.</p>
-              </div>
+        <div className="sidebar-scroll">
+          <section className="sidebar-section" aria-label="Projects">
+            <div className="sidebar-section-head">
+              <span>Projects</span>
+              <button type="button" onClick={() => startNewProject()} aria-label="New project" title="New project">
+                <span className="material-symbols-outlined">add</span>
+              </button>
+            </div>
+            {projects.length ? (
+              <SidebarProjectsList
+                projects={projects}
+                allPages={sidebarPages}
+                projectIndex={projectIndex}
+                activeProjectId={activeProjectId}
+                activePageId={activePageId}
+                onPageMoved={refreshSidebarPages}
+              />
+            ) : (
+              <button type="button" className="sidebar-empty-cta" onClick={() => startNewProject()}>
+                <span className="material-symbols-outlined">add</span>
+                Create your first project
+              </button>
             )}
+          </section>
 
-            {/* Bottom New Ctrl+N Button */}
-            <button
-              type="button"
-              className="notion-ai-new-btn"
-              onClick={handleStartNewAIChat}
-            >
-              <span className="material-symbols-outlined text-sm">edit_square</span>
-              <span>New</span>
-              <span className="text-[10px] opacity-60 font-mono">Ctrl+N</span>
-            </button>
-          </div>
-        ) : sidebarMode === 'notes' ? (
-          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-            <div className="flex items-center justify-between px-1 mb-2">
-              <h3 className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider">Pages & Notes</h3>
-              <button
-                type="button"
-                onClick={() => setNewPageModalOpen(true)}
-                className="w-6 h-6 flex items-center justify-center rounded hover:bg-surface-container-high text-on-surface-variant"
-                title="New Page"
-              >
-                <span className="material-symbols-outlined text-sm">add</span>
-              </button>
-            </div>
-            <div className="mb-2 px-1">
-              <input
-                type="text"
-                value={notesSearchQuery}
-                onChange={(e) => setNotesSearchQuery(e.target.value)}
-                placeholder="Search pages..."
-                className="w-full text-xs px-2.5 py-1.5 rounded-md border border-outline-variant/30 bg-surface-container-high outline-none text-on-surface"
-              />
-            </div>
-            <div className="flex-1 overflow-y-auto px-1">
-              <SidebarNotesTree
-                pages={sidebarPages}
-                searchQuery={notesSearchQuery}
-                onPageMoved={() => {
-                  if (AppState.workspace?.id) {
-                    getPages(AppState.workspace.id).then(({ data }) => {
-                      if (data) setSidebarPages(data);
-                    });
+          <section className="sidebar-section" aria-label="Other pages">
+            <div
+              className={`sidebar-section-head ${otherPagesDragOver ? 'drag-over' : ''}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setOtherPagesDragOver(true);
+              }}
+              onDragLeave={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget)) setOtherPagesDragOver(false);
+              }}
+              onDrop={async (e) => {
+                e.preventDefault();
+                setOtherPagesDragOver(false);
+                const id = getDraggedPageId(e);
+                if (!id) return;
+                const p = sidebarPages.find((page) => page.id === id);
+                if (p && (p.parent_id || projectIndex?.get(p.id))) {
+                  const { error } = await updatePage(p.id, { parent_id: null });
+                  if (!error) {
+                    showToast(`Moved "${p.title || 'Untitled'}" to the top level`, 'success');
+                    window.dispatchEvent(new CustomEvent('motion:pages-changed'));
+                    refreshSidebarPages();
                   }
-                }}
+                }
+              }}
+              title="Drop a page here to move it to the top level"
+            >
+              <span>Other pages</span>
+              <button type="button" onClick={() => setNewPageModalOpen(true)} aria-label="New page" title="New page (Ctrl+N)">
+                <span className="material-symbols-outlined">add</span>
+              </button>
+            </div>
+            {otherPages.length ? (
+              <SidebarTree
+                pages={otherPages}
+                allPages={sidebarPages}
+                projects={projects}
+                activePageId={activePageId}
+                currentProjectId={null}
+                onPageMoved={refreshSidebarPages}
+                showRootDropZone={true}
               />
+            ) : (
+              <p className="sidebar-hint">Pages that don’t belong to a project show up here.</p>
+            )}
+            <div className="sidebar-more">
+              <a href="#notes">All pages</a>
+              <a href="#kanban">All tasks</a>
+              <a href="#database">Table view</a>
             </div>
-          </div>
-        ) : sidebarMode === 'inbox' ? (
-          <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
-            <div className="flex items-center justify-between px-1 mb-2">
-              <h3 className="text-xs font-semibold text-on-surface-variant uppercase tracking-wider">Inbox</h3>
-              {notifications.length > 0 && (
-                <button
-                  type="button"
-                  onClick={async () => {
-                    await markAllNotificationsRead();
-                    const { data } = await getNotifications(10);
-                    setNotifications(data || []);
-                  }}
-                  className="text-[10px] font-semibold text-primary hover:underline"
-                >
-                  Mark all read
-                </button>
-              )}
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-1.5 px-1">
-              {notifications.length === 0 ? (
-                <p className="text-xs text-on-surface-variant/60 py-4 text-center">No notifications</p>
-              ) : (
-                notifications.map((n) => (
-                  <div
-                    key={n.id}
-                    className={`p-2.5 rounded-lg text-xs transition-colors ${!n.read_at ? 'bg-primary/5 border border-primary/20' : 'bg-surface-container-low'}`}
-                  >
-                    <p className="font-medium text-on-surface truncate">{n.title || n.message || 'Notification'}</p>
-                    <p className="text-[10px] text-on-surface-variant mt-0.5">{timeAgoShort(n.created_at)}</p>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        ) : (
-          /* Standard Pages/Workspace Navigation */
-          <>
-            <div className="flex flex-col gap-1.5 mb-3 px-1">
-              <button
-                id="btn-new-page"
-                onClick={() => setNewPageModalOpen(true)}
-                className="h-8 px-3 bg-primary text-on-primary rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 hover:opacity-90 transition-all shadow-sm active:scale-[0.98]"
-                type="button"
-              >
-                <span className="material-symbols-outlined text-sm">add</span>
-                New Page
-              </button>
-              <button
-                className="h-8 px-3 border border-outline-variant/40 text-on-surface-variant hover:text-on-surface rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 hover:bg-surface-container-high transition-all active:scale-[0.98]"
-                type="button"
-                onClick={() => setNewWorkspaceModalOpen(true)}
-              >
-                <span className="material-symbols-outlined text-sm">add_business</span>
-                New Workspace
-              </button>
-            </div>
+          </section>
+        </div>
 
-            <nav className="flex-grow space-y-1">
-              <a href="#chat" data-nav-route="chat" className="flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-high rounded-md transition-colors duration-200">
-                <span className="material-symbols-outlined">forum</span>
-                <span className="text-sm">Team chat</span>
-              </a>
-              <a
-                href="#database"
-                data-nav-route="database"
-                className="flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-high rounded-md transition-colors duration-200"
-              >
-                <span className="material-symbols-outlined">local_library</span>
-                <span className="text-sm">Library</span>
-              </a>
-              <a
-                href="#kanban"
-                data-nav-route="kanban"
-                className="flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-high rounded-md transition-colors duration-200"
-              >
-                <span className="material-symbols-outlined">view_kanban</span>
-                <span className="text-sm">Kanban</span>
-              </a>
-            </nav>
-
-            <div className="mt-auto pt-4 space-y-1">
-              <a
-                href="#settings"
-                data-nav-route="settings"
-                className="flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-high rounded-md transition-colors duration-200"
-              >
-                <span className="material-symbols-outlined">settings</span>
-                <span className="text-sm">Settings</span>
-              </a>
-              <a
-                href="#profile"
-                data-nav-route="profile"
-                className="flex items-center gap-3 px-3 py-2 text-on-surface-variant hover:bg-surface-container-high rounded-md transition-colors duration-200"
-              >
-                <span className="material-symbols-outlined">account_circle</span>
-                <span className="text-sm">Profile</span>
-              </a>
-            </div>
-          </>
-        )}
+        <div className="sidebar-footer">
+          <a href="#settings?section=team" className="sidebar-link">
+            <span className="material-symbols-outlined">group</span>
+            <span>Team{teamSize > 1 ? ` · ${teamSize}` : ''}</span>
+            <span className="sidebar-invite">Invite</span>
+          </a>
+          <a href="#settings" className={`sidebar-link ${route.path === 'settings' ? 'is-active' : ''}`}>
+            <span className="material-symbols-outlined">settings</span>
+            <span>Settings</span>
+          </a>
+          <button type="button" className="sidebar-link" onClick={() => setNewWorkspaceModalOpen(true)}>
+            <span className="material-symbols-outlined">add_business</span>
+            <span>New team</span>
+          </button>
+          <a href="#profile" className="sidebar-user" aria-label="Your profile">
+            {avatarUrl ? <img src={avatarUrl} alt="" /> : <span className="sidebar-user-initials">{userInitials}</span>}
+            <span className="sidebar-user-name">{AppState.profile?.name || AppState.user?.email || 'You'}</span>
+          </a>
+        </div>
       </aside>
 
       {/* Main */}
-      <main className="flex-grow min-w-0 flex flex-col overflow-y-auto overflow-x-hidden bg-surface">
-        <header className="sticky top-0 w-full z-40 bg-[#f9f9f8]/70 dark:bg-stone-950/70 backdrop-blur-xl flex justify-between items-center px-6 h-14">
+      <main className="motion-main flex-grow min-w-0 flex flex-col overflow-y-auto overflow-x-hidden bg-surface">
+        <header className="motion-topbar sticky top-0 w-full z-40 flex justify-between items-center px-6 h-14">
           <div className="flex items-center gap-4">
             {/* Mobile hamburger */}
             <button
               className="flex items-center justify-center w-8 h-8 rounded-lg hover:bg-[#e8ebea] dark:hover:bg-stone-800 transition-colors"
-              onClick={() => setSidebarOpen(true)}
+              onClick={toggleSidebar}
               aria-label="Open sidebar"
-              aria-expanded={sidebarOpen}
+              title="Show sidebar (Ctrl/⌘ + \)"
+              aria-expanded={sidebarShown}
               aria-controls="sidebar"
             >
               <span className="material-symbols-outlined">menu</span>
@@ -1379,9 +1262,8 @@ export default function App() {
             <div id="breadcrumb" className="flex items-center gap-2 text-sm text-on-surface-variant">
               <a
                 href="#dashboard"
-                aria-label="Go to home dashboard"
+                aria-label="Go home"
                 title="Home"
-                onClick={() => setSidebarMode('pages')}
                 className="inline-flex items-center justify-center rounded p-1 hover:bg-surface-container-high focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
               >
                 <span className="material-symbols-outlined text-sm" aria-hidden="true">home</span>
@@ -1391,30 +1273,15 @@ export default function App() {
                 className="text-[#2d3433] dark:text-stone-100 font-bold"
                 id="breadcrumb-current"
               >
-                {route.path === 'dashboard'
-                  ? 'Home'
-                  : route.path === 'ai-chat'
-                    ? (aiChats.find((c) => c.id === activeAIChatId)?.title || 'Chat')
-                    : route.path === 'chat'
-                      ? 'Team chat'
-                      : route.path === 'database'
-                        ? 'Library'
-                        : route.path === 'notes'
-                          ? 'Notes'
-                          : route.path === 'kanban'
-                            ? 'Kanban'
-                            : route.path === 'settings'
-                              ? 'Settings'
-                              : route.path === 'profile'
-                                ? 'Profile'
-                                : breadcrumb || 'Home'}
+                {routeTitle(route, breadcrumb, aiChats.find((c) => c.id === activeAIChatId)?.title)}
               </span>
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <PresenceStack people={onlineMembers} currentUserId={currentUserId} currentPageId={currentPageId} />
             {/* Theme Toggle */}
             <button
-              className="theme-toggle search-trigger"
+              className="workspace-search-trigger"
               onClick={openSearch}
               title="Search (⌘K)"
               aria-label="Search workspace"
@@ -1422,6 +1289,8 @@ export default function App() {
               <span className="material-symbols-outlined" style={{ fontSize: '1.25rem' }}>
                 search
               </span>
+              <span className="workspace-search-label">Search anything</span>
+              <kbd className="workspace-search-shortcut">⌘ K</kbd>
             </button>
 
             <button
@@ -1486,8 +1355,7 @@ export default function App() {
                       </div>
                     ) : notifications.length > 0 ? (
                       notifications.map((notification) => {
-                        const title = notification.payload?.title || notification.payload?.message || String(notification.type || 'Workspace update').replaceAll('_', ' ');
-                        const hasPage = Boolean(notification.page_id);
+                        const info = describeNotification(notification);
                         return (
                           <button
                             key={notification.id}
@@ -1501,23 +1369,20 @@ export default function App() {
                                 }
                                 setNotifications((current) => current.map((item) => item.id === notification.id ? { ...item, read_at: new Date().toISOString() } : item));
                               }
-                              if (hasPage) window.location.hash = `editor/${notification.page_id}`;
-                              else if (notification.type === 'task_assigned') {
-                                const taskId = notification.payload?.task_id;
-                                window.location.hash = taskId ? `kanban?task=${encodeURIComponent(taskId)}` : 'kanban';
-                              }
+                              if (info.href) window.location.hash = info.href;
                               setNotifOpen(false);
                             }}
                           >
-                            <div className="w-8 h-8 rounded-lg bg-surface-container-high flex items-center justify-center flex-shrink-0">
-                              <span className="material-symbols-outlined text-sm text-on-surface-variant">
-                                {notification.type?.includes('comment') ? 'comment' : notification.type === 'task_assigned' ? 'assignment' : notification.type?.includes('member') ? 'group' : 'notifications'}
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${notification.type === 'mention' ? 'bg-primary-container' : 'bg-surface-container-high'}`}>
+                              <span className={`material-symbols-outlined text-sm ${notification.type === 'mention' ? 'text-primary' : 'text-on-surface-variant'}`}>
+                                {info.icon}
                               </span>
                             </div>
                             <div className="min-w-0 flex-1">
-                              <p className="text-sm font-medium text-on-surface truncate">
-                                {title}
+                              <p className="notification-text text-sm font-medium text-on-surface">
+                                {info.text}
                               </p>
+                              {info.excerpt ? <p className="notification-excerpt">{info.excerpt}</p> : null}
                               <p className="text-[11px] text-on-surface-variant">
                                 {timeAgoShort(notification.created_at)}
                               </p>
@@ -1569,6 +1434,16 @@ export default function App() {
               id="header-avatar"
               className="w-8 h-8 rounded-full overflow-hidden bg-surface-container-highest cursor-pointer border border-outline-variant/10"
               onClick={() => (window.location.hash = 'profile')}
+              onContextMenu={openAvatarMenu}
+              title="Your profile (right-click for more)"
+              aria-haspopup="menu"
+              aria-expanded={Boolean(avatarMenu)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  window.location.hash = 'profile';
+                }
+              }}
               role="button"
               tabIndex={0}
             >
@@ -1583,6 +1458,21 @@ export default function App() {
           </div>
         </header>
 
+        {avatarMenu ? (
+          <div ref={avatarMenuRef} className="g-avatar-menu" role="menu" aria-label="Account" style={{ top: avatarMenu.top, right: avatarMenu.right }}>
+            <div className="g-avatar-menu-head">
+              <strong>{AppState.profile?.name || 'Your account'}</strong>
+              <span>{AppState.profile?.email || AppState.user?.email || ''}</span>
+            </div>
+            <button type="button" role="menuitem" onClick={avatarMenuEdit}>
+              <span className="material-symbols-outlined">edit</span>Edit profile
+            </button>
+            <button type="button" role="menuitem" className="is-danger" onClick={avatarMenuLogout}>
+              <span className="material-symbols-outlined">logout</span>Log out
+            </button>
+          </div>
+        ) : null}
+
         {isOffline ? (
           <div className="mx-4 mt-3 rounded-lg border border-error/30 bg-error-container/30 px-4 py-2 text-xs text-on-error-container flex items-center gap-2" role="status">
             <span className="material-symbols-outlined text-sm" aria-hidden="true">cloud_off</span>
@@ -1595,12 +1485,14 @@ export default function App() {
             {isBootstrapping ? (
               <div className="flex items-center justify-center h-[60vh]">
                 <div className="text-center">
-                  <div className="loading-spinner mx-auto mb-4"></div>
-                  <p className="text-sm text-on-surface-variant">Loading Motion...</p>
+                  <GroupifyLoader size={44} className="mx-auto mb-4" />
+                  <p className="text-sm text-on-surface-variant">Loading Groupify...</p>
                 </div>
               </div>
             ) : route.path === 'chat' ? (
               <TeamChat key={AppState.workspace?.id} workspace={AppState.workspace} user={AppState.user} />
+            ) : route.path === 'meeting' ? (
+              <MeetingView key={route.segments[0] || 'none'} meetingId={route.segments[0]} user={AppState.user} />
             ) : route.path === 'ai-chat' ? (
               <AIChatView
                 key={AppState.workspace?.id}
@@ -1656,7 +1548,7 @@ export default function App() {
         onClose={closeSearch}
         onSelect={(result) => {
           closeSearch();
-          window.location.hash = result.type === 'task' ? `kanban?task=${encodeURIComponent(result.id)}` : `editor/${result.id}`;
+          window.location.hash = result.type === 'task' ? `kanban?task=${encodeURIComponent(result.id)}` : result.type === 'project' ? `project/${result.id}` : `editor/${result.id}`;
         }}
         onAction={async (action) => {
           closeSearch();
@@ -1664,10 +1556,17 @@ export default function App() {
             setNewPageModalOpen(true);
             return;
           }
+          if (action === 'new-project') {
+            startNewProject();
+            return;
+          }
           if (action === 'new-task') {
-            const title = await requestInput('Task title:');
-            if (!title?.trim() || !AppState.workspace?.id) return;
-            createTask(title.trim(), { workspaceId: AppState.workspace.id, assigneeId: AppState.user?.id || null }).then(({ data: task, error }) => {
+            if (!AppState.workspace?.id) return;
+            const { data: members } = await getWorkspaceMembers(AppState.workspace.id);
+            const draft = await requestNewTask({ members: members || [], projects, projectId: activeProjectId || '' });
+            if (!draft) return;
+            const { title, ...options } = draft;
+            createTask(title, { ...options, workspaceId: AppState.workspace.id }).then(({ data: task, error }) => {
               if (error) showToast(`Could not create task: ${error.message}`, 'error');
               else {
                 showToast('Task created', 'success');

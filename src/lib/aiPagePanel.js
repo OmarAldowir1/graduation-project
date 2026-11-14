@@ -9,7 +9,7 @@ export function openAIPagePanel({pageId, pageTitle, pageText, initialPrompt = ''
   overlay.innerHTML = `<section class="task-detail-panel ai-page-panel" role="dialog" aria-modal="true" aria-label="AI assistant">
     <header>
       <div>
-        <small>MOTION AI • GEMINI POWERED</small>
+        <small>MOTION AI • WORKERS AI FREE</small>
         <h2>In-Page AI Assistant</h2>
       </div>
       <button data-close aria-label="Close AI assistant">×</button>
@@ -28,7 +28,7 @@ export function openAIPagePanel({pageId, pageTitle, pageText, initialPrompt = ''
     <label class="ai-context-choice">
       <input type="checkbox" data-context checked /> Use current page content as context (to edit or build upon)
     </label>
-    <p class="ai-privacy-note">Your prompt and draft are processed via Google Gemini 3.5 Flash-Lite. Your page will not change until you click Apply Selected Blocks.</p>
+    <p class="ai-privacy-note">Your prompt and selected page context are processed via Cloudflare Workers AI Free. Your page will not change until you click Apply Selected Blocks.</p>
     <div class="ai-panel-buttons">
       <button class="modal-btn-primary" data-generate disabled>Generate Draft</button>
       <button class="modal-btn-secondary" data-stop hidden>Stop Generating</button>

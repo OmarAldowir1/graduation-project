@@ -6,7 +6,7 @@ import {
   addMessageToChat,
   deleteAIChat
 } from '../lib/aiChatStore.js';
-import { chatWithGemini } from '../lib/gemini.js';
+import { chatWithMotionAI } from '../lib/motionAI.js';
 import { parseAttachedDocument } from '../lib/documentParser.js';
 import {
   getActiveEditor,
@@ -255,7 +255,7 @@ export default function AIPageSidebar({
 
       const chatHistory = currentChat?.messages || [];
 
-      const aiReply = await chatWithGemini({
+      const aiReply = await chatWithMotionAI({
         messages: chatHistory,
         newUserPrompt: messageText,
         attachedFile: fileToUpload,
@@ -270,10 +270,10 @@ export default function AIPageSidebar({
 
       setChats(getStoredChats());
     } catch (err) {
-      console.error('Gemini error:', err);
+      console.error('AI error:', err);
       addMessageToChat(targetChatId, {
         sender: 'ai',
-        text: `### AI Assistant Notice\nI encountered an issue connecting to Gemini: ${err.message || 'Network error'}.\n\nPlease ensure your Gemini API key is valid in settings.`
+        text: `### AI Assistant Notice\n${err.message || 'AI is unavailable. Please try again later.'}`
       });
       setChats(getStoredChats());
     } finally {
@@ -514,8 +514,8 @@ export default function AIPageSidebar({
                     <div className="w-full bg-surface border border-outline-variant/25 rounded-2xl rounded-tl-xs p-3.5 shadow-2xs space-y-3">
                       <div className="flex items-center gap-2">
                         <NotionAIFace size={20} />
-                        <span className="text-[11px] font-bold text-on-surface">Motion AI</span>
-                        <span className="text-[10px] text-on-surface-variant/60 font-medium ml-auto">Gemini 3.8</span>
+                        <span className="text-[11px] font-bold text-on-surface">Groupify AI</span>
+                        <span className="text-[10px] text-on-surface-variant/60 font-medium ml-auto">Workers AI Free</span>
                       </div>
 
                       <div className="text-xs text-on-surface space-y-2">
@@ -568,7 +568,7 @@ export default function AIPageSidebar({
                 <span className="w-2 h-2 rounded-full bg-primary animate-bounce"></span>
                 <span className="w-2 h-2 rounded-full bg-primary animate-bounce [animation-delay:0.2s]"></span>
                 <span className="w-2 h-2 rounded-full bg-primary animate-bounce [animation-delay:0.4s]"></span>
-                <span className="text-[11px] ml-1 font-medium">Motion AI is thinking...</span>
+                <span className="text-[11px] ml-1 font-medium">Groupify AI is thinking...</span>
               </div>
             )}
 
@@ -655,7 +655,9 @@ export default function AIPageSidebar({
 
               <span
                 className="w-6 h-6 flex items-center justify-center text-on-surface-variant/60 cursor-help"
-                title="Your notes and requests are processed privately via Google Gemini"
+                title={import.meta.env.DEV
+                  ? 'Your prompt goes from this Mac to Cloudflare Workers AI. The API token stays on this Mac.'
+                  : 'Selected notes and requests are sent through Supabase to Cloudflare Workers AI'}
               >
                 <span className="material-symbols-outlined text-[15px]">security</span>
               </span>
