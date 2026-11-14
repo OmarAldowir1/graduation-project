@@ -40,10 +40,16 @@ export function tasksForProject(tasks = [], pages = [], projectId) {
   return tasks.filter((task) => task.page_id && ids.has(task.page_id));
 }
 
+// Percent uses each task's progress (done = 100%), so half-finished work counts.
 export function projectProgress(tasks = []) {
   const done = tasks.filter((task) => task.status === 'done' || task.completed).length;
   const total = tasks.length;
-  return { done, total, open: total - done, percent: total ? Math.round((done / total) * 100) : 0 };
+  const sum = tasks.reduce((acc, task) => {
+    if (task.status === 'done' || task.completed) return acc + 100;
+    const value = Number(task.progress);
+    return acc + (Number.isFinite(value) ? Math.max(0, Math.min(100, value)) : 0);
+  }, 0);
+  return { done, total, open: total - done, percent: total ? Math.round(sum / total) : 0 };
 }
 
 export function isOverdue(task, now = new Date()) {

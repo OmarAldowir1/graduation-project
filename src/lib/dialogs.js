@@ -131,7 +131,12 @@ export function requestForm({ title, description = '', submitLabel = 'Save', fie
   const controls = fields.map((field) => {
     const common = `name="${escapeAttr(field.name)}" ${field.required ? 'required' : ''} ${field.placeholder ? `placeholder="${escapeAttr(field.placeholder)}"` : ''}`;
     let control;
-    if (field.type === 'select') {
+    if (field.type === 'checkboxes') {
+      const selected = new Set((Array.isArray(field.value) ? field.value : []).map(String));
+      control = `<div class="modal-checks" role="group" aria-label="${escapeAttr(field.label)}">${(field.options || []).map((option) => `<label class="modal-check"><input type="checkbox" name="${escapeAttr(field.name)}" value="${escapeAttr(option.value)}" ${selected.has(String(option.value)) ? 'checked' : ''} /><span>${escapeAttr(option.label)}</span></label>`).join('') || '<small>No one to choose yet.</small>'}</div>`;
+    } else if (field.type === 'swatches') {
+      control = `<div class="modal-swatches" role="radiogroup" aria-label="${escapeAttr(field.label)}">${(field.options || []).map((option) => `<label class="modal-swatch" title="${escapeAttr(option.label)}"><input type="radio" name="${escapeAttr(field.name)}" value="${escapeAttr(option.value)}" ${String(option.value) === String(field.value ?? '') ? 'checked' : ''} /><span style="background:${escapeAttr(option.color)}"></span></label>`).join('')}</div>`;
+    } else if (field.type === 'select') {
       control = `<select class="modal-input" ${common}>${(field.options || []).map((option) => `<option value="${escapeAttr(option.value)}" ${String(option.value) === String(field.value ?? '') ? 'selected' : ''}>${escapeAttr(option.label)}</option>`).join('')}</select>`;
     } else if (field.type === 'textarea') {
       control = `<textarea class="modal-input" rows="3" ${common}>${escapeAttr(field.value)}</textarea>`;
@@ -150,7 +155,11 @@ export function requestForm({ title, description = '', submitLabel = 'Save', fie
     onReady(form, finish) {
       form.addEventListener('submit', (event) => {
         event.preventDefault();
-        finish(Object.fromEntries(fields.map((field) => [field.name, String(form.elements[field.name]?.value ?? '').trim()])));
+        finish(Object.fromEntries(fields.map((field) => {
+          if (field.type === 'checkboxes') return [field.name, [...form.querySelectorAll(`input[name="${CSS.escape(field.name)}"]:checked`)].map((input) => input.value)];
+          if (field.type === 'swatches') return [field.name, form.querySelector(`input[name="${CSS.escape(field.name)}"]:checked`)?.value || ''];
+          return [field.name, String(form.elements[field.name]?.value ?? '').trim()];
+        })));
       });
       form.querySelector('textarea')?.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); form.requestSubmit(); }

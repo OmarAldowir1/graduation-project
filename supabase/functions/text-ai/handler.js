@@ -55,7 +55,7 @@ export function createTextAIHandler({env, fetchImpl = fetch, authenticate, reser
           ...history,
           {role: 'user', content: `${material ? `${material}\n\n---\n` : ''}${input.prompt.trim()}`}
         ];
-        maxTokens = 3000;
+        maxTokens = 6000; // big team plans need room for many actions
       } else if (input.mode === 'chat') {
         if (Object.keys(input).some(key => !['mode','prompt','messages','attachment','pageContext','workspaceName'].includes(key))) throw new RequestError(400, 'INVALID_REQUEST', 'Unsupported AI request.');
         if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 4000) throw new RequestError(400, 'INVALID_REQUEST', 'Enter a message of 1–4,000 characters.');

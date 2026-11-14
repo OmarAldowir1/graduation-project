@@ -9,10 +9,16 @@ import { isProject, projectPageIds, tasksForProject, projectProgress, isOverdue,
 import { startNewPageIn } from '../../lib/projectActions.js';
 import { requestNewTask, openTaskDetails } from '../../lib/taskDetails.js';
 import { renderKanban } from './kanban.js';
+import { renderTeamsTab } from './projectTeams.js';
+import { getProjectTeams, teamStats, TEAM_COLORS } from '../../lib/teams.js';
+import { generateProjectReport } from '../../lib/projectReport.js';
+import { requestForm } from '../../lib/dialogs.js';
+import { loaderHtml } from '../../lib/loader.js';
 
 const TABS = [
   { id: 'overview', label: 'Overview', icon: 'space_dashboard' },
   { id: 'plan', label: 'Plan & discussion', icon: 'forum' },
+  { id: 'teams', label: 'Teams', icon: 'groups' },
   { id: 'tasks', label: 'Tasks', icon: 'view_kanban' },
   { id: 'pages', label: 'Pages', icon: 'description' }
 ];
@@ -54,14 +60,16 @@ export function renderProjectBar({ project, activeTab, progress = null, members 
 
 export async function renderProject(container, route) {
   const projectId = route?.segments?.[0];
-  const tab = ['tasks', 'pages'].includes(route?.segments?.[1]) ? route.segments[1] : 'overview';
+  const tab = ['tasks', 'pages', 'teams'].includes(route?.segments?.[1]) ? route.segments[1] : 'overview';
   const workspaceId = AppState.workspace?.id;
 
-  const [pagesResult, tasksResult, membersResult] = await Promise.all([
+  const [pagesResult, tasksResult, membersResult, teamsResult] = await Promise.all([
     workspaceId ? getPages(workspaceId) : Promise.resolve({ data: [] }),
     getTasks({ workspaceId }),
-    workspaceId ? getWorkspaceMembers(workspaceId) : Promise.resolve({ data: [] })
+    workspaceId ? getWorkspaceMembers(workspaceId) : Promise.resolve({ data: [] }),
+    projectId ? getProjectTeams(projectId) : Promise.resolve({ data: [] })
   ]);
+  const teams = teamsResult.data || [];
   const pages = pagesResult.data || [];
   const project = pages.find((page) => page.id === projectId);
   if (!project || !isProject(project)) {
@@ -75,6 +83,16 @@ export async function renderProject(container, route) {
   const tasks = tasksForProject(tasksResult.data || [], pages, project.id);
   const progress = projectProgress(tasks);
   const bar = renderProjectBar({ project, activeTab: tab, progress, members });
+
+  if (tab === 'teams') {
+    container.innerHTML = `<div class="project-view">${bar}<section class="project-section project-teams"></section></div>`;
+    renderTeamsTab(container.querySelector('.project-teams'), {
+      project, teams, tasks, members, workspaceId,
+      unavailable: Boolean(teamsResult.unavailable),
+      refresh: () => renderProject(container, route)
+    });
+    return;
+  }
 
   if (tab === 'tasks') {
     container.innerHTML = `<div class="project-view">${bar}<div class="project-board"></div></div>`;
@@ -126,11 +144,20 @@ export async function renderProject(container, route) {
       <span class="project-task-meta ${isOverdue(task) ? 'is-overdue' : ''}">${task.due_date ? (isOverdue(task) ? 'Overdue · ' : 'Due ') + escapeHtml(task.due_date) : ''}</span>
     </li>`;
 
+  const reports = projectPages.filter((page) => /^Progress report/.test(page.title || '')).sort((a, b) => String(b.created_at || b.updated_at).localeCompare(String(a.created_at || a.updated_at)));
   container.innerHTML = `<div class="project-view">${bar}
+    <div class="project-report-row">
+      <button type="button" class="project-btn primary" data-report><span class="material-symbols-outlined">monitoring</span> Progress report</button>
+      ${reports[0] ? `<a class="project-link" href="#editor/${escapeHtml(reports[0].id)}">Last report: ${escapeHtml(timeAgo(reports[0].created_at || reports[0].updated_at))} →</a>` : '<span class="project-report-hint">One click: a summary of progress, teams, overdue work and who did what, for your team or supervisor.</span>'}
+    </div>
     ${overdue.length || unassigned.length ? `<div class="project-alerts">
       ${overdue.length ? `<span class="project-alert danger"><span class="material-symbols-outlined">schedule</span>${overdue.length} overdue</span>` : ''}
       ${unassigned.length ? `<span class="project-alert"><span class="material-symbols-outlined">person_off</span>${unassigned.length} without an owner — assign them so nothing slips</span>` : ''}
     </div>` : ''}
+    ${teams.length ? `<a class="project-teams-strip" href="${tabHref(project.id, 'teams')}" aria-label="Open teams">${teams.map((team) => {
+      const stats = teamStats(team, tasks);
+      return `<span class="project-team-pill" style="--team:${TEAM_COLORS[team.color] || TEAM_COLORS.blue}"><i></i><strong>${escapeHtml(team.name)}</strong><span class="project-team-pill-track"><b style="width:${stats.percent}%"></b></span><small>${stats.percent}%</small></span>`;
+    }).join('')}<span class="project-link">Teams →</span></a>` : ''}
     <div class="project-grid">
       <section class="project-section">
         <div class="project-section-head"><h2>Next up</h2><div class="project-head-actions"><button type="button" class="project-btn primary" data-add-task><span class="material-symbols-outlined">add_task</span> Add task</button><a class="project-link" href="${tabHref(project.id, 'tasks')}">Board →</a></div></div>
@@ -152,6 +179,38 @@ export async function renderProject(container, route) {
     </div></div>`;
 
   const refresh = () => renderProject(container, route);
+  container.querySelector('[data-report]')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    const values = await requestForm({
+      title: 'Progress report',
+      description: 'Groupify counts everything (progress, teams, overdue work, who did what) and the AI writes a short summary with next steps. The report is saved as a page in this project.',
+      submitLabel: 'Generate report',
+      fields: [
+        { name: 'days', label: 'Period', type: 'select', value: '7', options: [{ value: '7', label: 'Last 7 days' }, { value: '14', label: 'Last 14 days' }, { value: '30', label: 'Last 30 days' }] },
+        { name: 'ai', label: 'Summary', type: 'select', value: 'yes', options: [{ value: 'yes', label: 'Include AI summary and next steps' }, { value: 'no', label: 'Numbers only (no AI)' }] }
+      ]
+    });
+    if (!values) return;
+    const original = button.innerHTML;
+    button.disabled = true;
+    button.innerHTML = `${loaderHtml(16, 'Generating report')} Writing report…`;
+    try {
+      const { page, aiError } = await generateProjectReport({
+        workspaceId, project, tasks, teams, members,
+        pageIds: [...ids],
+        days: Number(values.days) || 7,
+        author: AppState.profile?.name || '',
+        useAI: values.ai === 'yes'
+      });
+      showToast(aiError ? 'Report saved (AI summary unavailable, numbers are complete)' : 'Report ready', aiError ? 'error' : 'success');
+      window.dispatchEvent(new CustomEvent('motion:pages-changed'));
+      window.location.hash = `editor/${page.id}`;
+    } catch (error) {
+      showToast(`Could not create the report: ${error.message}`, 'error');
+      button.disabled = false;
+      button.innerHTML = original;
+    }
+  });
   container.querySelector('[data-new-page]')?.addEventListener('click', () => startNewPageIn(project.id));
   container.querySelector('[data-add-task]')?.addEventListener('click', async () => {
     const draft = await requestNewTask({ members, heading: `New task in “${project.title}”` });
@@ -170,6 +229,6 @@ export async function renderProject(container, route) {
   }));
   container.querySelectorAll('[data-open]').forEach((button) => button.addEventListener('click', () => {
     const task = tasks.find((item) => item.id === button.dataset.open);
-    if (task) openTaskDetails(task, members, refresh);
+    if (task) openTaskDetails(task, members, refresh, { teams });
   }));
 }

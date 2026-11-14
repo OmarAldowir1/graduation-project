@@ -296,21 +296,26 @@ export async function getTaskCounts(workspaceId) {
 
 export async function createTask(
   title,
-  { workspaceId, pageId, status = 'todo', priority = 'medium', assigneeId, dueDate, tags, sortOrder = Date.now() } = {}
+  { workspaceId, pageId, status = 'todo', priority = 'medium', assigneeId, dueDate, tags, sortOrder = Date.now(), teamId, progress, details } = {}
 ) {
+  const row = {
+    title,
+    workspace_id: workspaceId || null,
+    page_id: pageId || null,
+    status,
+    priority,
+    assignee_id: assigneeId || null,
+    due_date: dueDate || null,
+    tags: tags || [],
+    sort_order: sortOrder
+  };
+  // Team and progress columns exist once sql/project-teams.sql has run.
+  if (teamId) row.team_id = teamId;
+  if (Number.isFinite(progress)) row.progress = Math.max(0, Math.min(100, Math.round(progress)));
+  if (details && typeof details === 'object') row.details = details;
   const { data, error } = await supabase
     .from('tasks')
-    .insert({
-      title,
-      workspace_id: workspaceId || null,
-      page_id: pageId || null,
-      status,
-      priority,
-      assignee_id: assigneeId || null,
-      due_date: dueDate || null,
-      tags: tags || [],
-      sort_order: sortOrder
-    })
+    .insert(row)
     .select('*, assignee:users!assignee_id(id, name, avatar_url)')
     .single();
   return { data, error };

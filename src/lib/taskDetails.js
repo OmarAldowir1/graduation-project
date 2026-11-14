@@ -5,10 +5,11 @@ import { escapeHtml as esc } from './sanitize.js';
 import { AppState, showToast } from '../legacy/app.js';
 import { requestForm } from './dialogs.js';
 import { loadTaskFields, renderFieldInputs, readFieldInputs } from './taskFields.js';
+import { getWorkspaceTeams, taskPermissions, taskProgress, workspaceRole, TEAM_COLORS } from './teams.js';
 
 let closeActiveTask = null;
 
-export function openTaskDetails(task, members = [], onSaved = () => {}) {
+export function openTaskDetails(task, members = [], onSaved = () => {}, { teams: knownTeams = null } = {}) {
   closeActiveTask?.();
   const details = task.details || {};
   const checklist = Array.isArray(details.checklist) ? details.checklist.map(item => ({ id: item.id || crypto.randomUUID(), text: String(item.text || ''), done: Boolean(item.done) })) : [];
@@ -16,6 +17,7 @@ export function openTaskDetails(task, members = [], onSaved = () => {}) {
   backdrop.className = 'task-detail-backdrop';
   backdrop.innerHTML = `<section class="task-detail-panel" role="dialog" aria-modal="true" aria-label="Task details">
     <header><div><small>TASK DETAILS</small><h2>Instructions &amp; progress</h2></div><button type="button" data-close aria-label="Close task details">×</button></header>
+    <p class="task-detail-lock" data-lock hidden></p>
     <form class="task-detail-form">
       <label>Title<input name="title" value="${esc(task.title || '')}" required maxlength="500" /></label>
       <label>Description<textarea name="description" rows="5" placeholder="Explain what needs to be done, the expected result, and any important instructions.">${esc(details.description || '')}</textarea></label>
@@ -23,6 +25,8 @@ export function openTaskDetails(task, members = [], onSaved = () => {}) {
         <label>Status<select name="status">${['todo','in_progress','done'].map(value => `<option value="${value}" ${task.status === value ? 'selected' : ''}>${{todo:'To do',in_progress:'In progress',done:'Done'}[value]}</option>`).join('')}</select></label>
         <label>Priority<select name="priority">${['low','medium','high','urgent'].map(value => `<option ${task.priority === value ? 'selected' : ''}>${value}</option>`).join('')}</select></label>
         <label>Due date<input name="due_date" type="date" value="${esc(task.due_date || '')}" /></label>
+        <label>Team<select name="team_id" data-team-select><option value="">No team</option>${task.team_id ? `<option value="${esc(task.team_id)}" selected>Loading…</option>` : ''}</select></label>
+        <label class="task-detail-progress">Progress <output data-progress-value>${taskProgress(task)}%</output><input name="progress" type="range" min="0" max="100" step="5" value="${taskProgress(task)}" /></label>
         <label>Assignee<select name="assignee_id"><option value="">Unassigned</option>${members.map(member => `<option value="${esc(member.user_id)}" ${task.assignee_id === member.user_id ? 'selected' : ''}>${esc(member.user?.name || member.user?.email || 'Member')}</option>`).join('')}${task.assignee_id && !members.some(member => member.user_id === task.assignee_id) ? `<option value="${esc(task.assignee_id)}" selected>${esc(task.assignee?.name || 'Current assignee')}</option>` : ''}</select></label>
       </div>
       <div data-custom-fields></div>
@@ -71,6 +75,54 @@ export function openTaskDetails(task, members = [], onSaved = () => {}) {
     if(index >= 0) checklist.splice(index,1);
     renderChecklist();
   });
+  // Progress and status move together: 100% means done, done means 100%.
+  const progressInput = form.elements.progress;
+  const progressValue = backdrop.querySelector('[data-progress-value]');
+  progressInput.addEventListener('input', () => {
+    progressValue.textContent = `${progressInput.value}%`;
+    if (progressInput.value === '100') form.elements.status.value = 'done';
+    else if (form.elements.status.value === 'done') form.elements.status.value = 'in_progress';
+    else if (progressInput.value !== '0' && form.elements.status.value === 'todo') form.elements.status.value = 'in_progress';
+  });
+  form.elements.status.addEventListener('change', () => {
+    if (form.elements.status.value === 'done') { progressInput.value = '100'; progressValue.textContent = '100%'; }
+    else if (progressInput.value === '100') { progressInput.value = '90'; progressValue.textContent = '90%'; }
+  });
+
+  // Team tasks: only the leader (or team owner/admin) edits; the assignee reports progress.
+  let permissions = { full: true, progressOnly: false, readOnly: false };
+  let teamsForTask = [];
+  const applyPermissions = () => {
+    const me = AppState.user?.id;
+    const team = teamsForTask.find(item => item.id === task.team_id) || null;
+    permissions = taskPermissions(task, team, workspaceRole(members, me, AppState.workspace), me);
+    const lock = backdrop.querySelector('[data-lock]');
+    const leaderName = team?.leader?.name || team?.leader?.email || 'the team leader';
+    if (permissions.readOnly || permissions.progressOnly) {
+      lock.hidden = false;
+      lock.innerHTML = permissions.readOnly
+        ? `<span class="material-symbols-outlined">lock</span> Only ${esc(leaderName)} can edit tasks in <strong>${esc(team?.name || 'this team')}</strong>. You can still comment below.`
+        : `<span class="material-symbols-outlined">lock_open</span> You can update the status and progress. ${esc(leaderName)} manages the rest of this task.`;
+      form.querySelectorAll('input, select, textarea, button').forEach(control => {
+        const allowed = permissions.progressOnly && ['status', 'progress'].includes(control.name);
+        if (control.type === 'submit') { control.hidden = permissions.readOnly; return; }
+        if (!allowed) control.disabled = true;
+      });
+      backdrop.querySelectorAll('[data-add-step], [data-checklist] button').forEach(button => { button.hidden = true; });
+    }
+  };
+  (knownTeams ? Promise.resolve({ data: knownTeams }) : getWorkspaceTeams(AppState.workspace?.id)).then(({ data }) => {
+    if (!backdrop.isConnected) return;
+    const all = data || [];
+    teamsForTask = all.filter(team => team.id === task.team_id || (task.page_id && team.project_id === task.page_id));
+    const select = backdrop.querySelector('[data-team-select]');
+    select.innerHTML = `<option value="">No team</option>${teamsForTask.map(team => `<option value="${esc(team.id)}" ${team.id === task.team_id ? 'selected' : ''}>● ${esc(team.name)}</option>`).join('')}`;
+    select.closest('label').hidden = !teamsForTask.length;
+    const current = teamsForTask.find(team => team.id === task.team_id);
+    if (current) select.style.color = TEAM_COLORS[current.color] || '';
+    applyPermissions();
+  });
+
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const fields = form.elements;
@@ -81,7 +133,18 @@ export function openTaskDetails(task, members = [], onSaved = () => {}) {
     const submit = form.querySelector('button[type=submit]');
     submit.disabled = true; status.textContent = 'Saving…';
     const fieldValues = customFields.length ? readFieldInputs(form, customFields, task.fields) : undefined;
+    const progress = Number(fields.progress.value);
+    if (permissions.progressOnly) {
+      const {error} = await updateTask(task.id, { status: fields.status.value, progress });
+      submit.disabled = false;
+      if(error) { status.textContent = `Could not save task: ${error.message}`; return; }
+      showToast('Progress updated'); close(); await onSaved();
+      return;
+    }
+    const teamChange = (fields.team_id.value || null) !== (task.team_id || null) ? { team_id: fields.team_id.value || null } : {};
     const {error} = await updateTask(task.id, {
+      ...teamChange,
+      ...('progress' in task ? { progress } : {}),
       ...(fieldValues ? {fields: fieldValues} : {}),
       title:fields.title.value.trim(), status:fields.status.value, priority:fields.priority.value,
       due_date:fields.due_date.value || null, assignee_id:fields.assignee_id.value || null,

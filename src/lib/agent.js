@@ -7,6 +7,7 @@ import { invokeAI } from './cloudflareAI.js';
 import { getPages, getTasks, getWorkspaceMembers, createPage, createTask, updateTask, updatePage, createComment, createTaskComment } from './queries.js';
 import { buildProjectIndex, listProjects, projectProgress, tasksForProject, PROJECT_TEMPLATES, PROJECT_TYPE } from './projects.js';
 import { markdownToHtml } from './markdown.js';
+import { getWorkspaceTeams, createTeam, updateTeam, canManageTeam, workspaceRole, averageProgress } from './teams.js';
 
 function todayKey() {
   const now = new Date();
@@ -18,11 +19,13 @@ function todayKey() {
 export async function buildAgentContext({ focusPageId = null } = {}) {
   const workspaceId = AppState.workspace?.id;
   if (!workspaceId) throw new Error('Select a team first.');
-  const [pagesResult, tasksResult, membersResult] = await Promise.all([
+  const [pagesResult, tasksResult, membersResult, teamsResult] = await Promise.all([
     getPages(workspaceId),
     getTasks({ workspaceId }),
-    getWorkspaceMembers(workspaceId)
+    getWorkspaceMembers(workspaceId),
+    getWorkspaceTeams(workspaceId)
   ]);
+  const teams = teamsResult.data || [];
   const pages = (pagesResult.data || []).filter((page) => !page.archived_at);
   const tasks = tasksResult.data || [];
   const members = membersResult.data || [];
@@ -45,6 +48,9 @@ export async function buildAgentContext({ focusPageId = null } = {}) {
   const memberName = (member) => member.user?.name || member.user?.email?.split('@')[0] || 'Member';
   add('U', sortedMembers, memberName);
   add('P', projects, (project) => project.title || 'Untitled project');
+  const projectIds = new Set(projects.map((project) => project.id));
+  const visibleTeams = teams.filter((team) => projectIds.has(team.project_id)).slice(0, 80);
+  add('M', visibleTeams, (team) => team.name || 'Team');
   const visiblePages = pages.slice(0, 200);
   add('G', visiblePages, (page) => page.title || 'Untitled');
   const openFirst = [...tasks].sort((a, b) => Number(a.status === 'done') - Number(b.status === 'done')).slice(0, 250);
@@ -68,6 +74,15 @@ export async function buildAgentContext({ focusPageId = null } = {}) {
       const progress = projectProgress(tasksForProject(tasks, pages, project.id));
       return { ref: ref('P', project.id), title: project.title || 'Untitled project', done: progress.done, total: progress.total, plan: ref('G', project.id) };
     }),
+    teams: visibleTeams.map((team) => ({
+      ref: ref('M', team.id),
+      name: team.name || 'Team',
+      project: ref('P', team.project_id),
+      leader: ref('U', team.leader_id),
+      members: (team.members || []).map((member) => ref('U', member.user_id)).filter(Boolean),
+      progress: averageProgress(tasks.filter((task) => task.team_id === team.id)),
+      canManage: canManageTeam(team, workspaceRole(members, meId, AppState.workspace), meId)
+    })),
     pages: visiblePages.map((page) => ({ ref: ref('G', page.id), title: page.title || 'Untitled', project: ref('P', projectIndex.get(page.id)) })),
     tasks: openFirst.map((task) => ({
       ref: ref('T', task.id),
@@ -76,10 +91,12 @@ export async function buildAgentContext({ focusPageId = null } = {}) {
       priority: task.priority || 'medium',
       due: task.due_date || null,
       owner: ref('U', task.assignee_id),
-      project: ref('P', projectIndex.get(task.page_id))
+      project: ref('P', projectIndex.get(task.page_id)),
+      team: ref('M', task.team_id),
+      progress: task.status === 'done' ? 100 : Number(task.progress) || 0
     }))
   };
-  return { snapshot, refs, members, pages, tasks };
+  return { snapshot, refs, members, pages, tasks, teams };
 }
 
 function htmlToText(html = '') {
@@ -134,7 +151,7 @@ export async function runAgent({ prompt, history = [], attachment = null, signal
 
 // Safety net: if the model still wrote refs in its reply, show names instead.
 export function replaceRefs(text, refs) {
-  return String(text).replace(/\b([PGTU]\d{1,4})\b/g, (match) => (refs.get(match) ? `“${refs.get(match).title}”` : match));
+  return String(text).replace(/\b([PGTUM]\d{1,4})\b/g, (match) => (refs.get(match) ? `“${refs.get(match).title}”` : match));
 }
 
 // ---------- describe ----------
@@ -151,8 +168,16 @@ export function describeAction(action, refs, createdTitles = new Map()) {
       return { icon: 'note_add', text: `Create page “${action.title}”`, detail: action.project ? `in ${name(action.project)}` : '' };
     case 'append_to_page':
       return { icon: 'edit_note', text: `Add text to “${name(action.page)}”`, detail: `${action.content.split('\n').filter(Boolean).length} line(s)` };
+    case 'create_team': {
+      const bits = [`in ${name(action.project)}`, action.leader && `led by ${name(action.leader)}`, action.members?.length && `${action.members.length} member${action.members.length === 1 ? '' : 's'}`].filter(Boolean);
+      return { icon: 'group_add', text: `Create team “${action.name}”`, detail: bits.join(' · ') };
+    }
+    case 'update_team': {
+      const bits = [action.name && `rename to “${action.name}”`, action.leader && `leader → ${name(action.leader)}`, action.members && `${action.members.length} member(s)`].filter(Boolean);
+      return { icon: 'groups', text: `Update team “${name(action.team)}”`, detail: bits.join(' · ') };
+    }
     case 'create_task': {
-      const bits = [action.project && `in ${name(action.project)}`, action.owner && `owner ${name(action.owner)}`, action.due && `due ${action.due}`, action.priority && PRIORITY_LABEL[action.priority]].filter(Boolean);
+      const bits = [action.team ? `team ${name(action.team)}` : action.project && `in ${name(action.project)}`, action.owner && `owner ${name(action.owner)}`, action.due && `due ${action.due}`, action.priority && PRIORITY_LABEL[action.priority], Number.isFinite(action.progress) && action.progress > 0 && `${action.progress}%`].filter(Boolean);
       return { icon: 'add_task', text: `Create task “${action.title}”`, detail: bits.join(' · ') };
     }
     case 'update_task': {
@@ -161,7 +186,9 @@ export function describeAction(action, refs, createdTitles = new Map()) {
         action.status && `status → ${STATUS_LABEL[action.status]}`,
         action.priority && `priority → ${action.priority}`,
         action.owner && (action.owner === 'none' ? 'remove owner' : `owner → ${name(action.owner)}`),
-        action.due && (action.due === 'none' ? 'remove due date' : `due → ${action.due}`)
+        action.due && (action.due === 'none' ? 'remove due date' : `due → ${action.due}`),
+        Number.isFinite(action.progress) && `progress → ${action.progress}%`,
+        action.team && (action.team === 'none' ? 'remove from team' : `team → ${name(action.team)}`)
       ].filter(Boolean);
       return { icon: 'edit', text: `Update task “${name(action.task)}”`, detail: bits.join(' · ') };
     }
@@ -222,9 +249,42 @@ export async function executeAgentActions(actions, context) {
         if (error) throw error;
         try { localStorage.removeItem(`motion-page-draft:${pageId}`); } catch { /* ignore */ }
         results.push({ ok: true, text: info.text, href: `#editor/${pageId}` });
+      } else if (action.type === 'create_team') {
+        const projectId = idOf(action.project, 'P');
+        if (!projectId) throw new Error('The project for this team was not created.');
+        const { data: team, error } = await createTeam({
+          workspaceId,
+          projectId,
+          name: action.name,
+          color: action.color || ['blue', 'teal', 'amber', 'purple', 'green', 'pink', 'orange', 'slate'][[...created.values()].filter((item) => item.kind === 'M').length % 8],
+          leaderId: action.leader ? idOf(action.leader, 'U') : null,
+          memberIds: (action.members || []).map((ref) => idOf(ref, 'U')).filter(Boolean),
+          sortOrder: [...created.values()].filter((item) => item.kind === 'M').length
+        });
+        if (error) throw error;
+        if (action.ref) created.set(action.ref, { id: team.id, kind: 'M', title: action.name, projectId });
+        results.push({ ok: true, text: info.text, href: `#project/${projectId}/teams` });
+        navigateTo ??= `project/${projectId}/teams`;
+      } else if (action.type === 'update_team') {
+        const teamId = idOf(action.team, 'M');
+        const team = (context.teams || []).find((item) => item.id === teamId);
+        if (!team) throw new Error('Team not found.');
+        const { error } = await updateTeam(team, {
+          name: action.name || team.name,
+          color: action.color || team.color,
+          leaderId: action.leader ? idOf(action.leader, 'U') : team.leader_id,
+          memberIds: action.members ? action.members.map((ref) => idOf(ref, 'U')).filter(Boolean) : undefined
+        });
+        if (error) throw error;
+        results.push({ ok: true, text: info.text, href: `#project/${team.project_id}/teams` });
       } else if (action.type === 'create_task') {
-        const projectId = action.project ? idOf(action.project, 'P') : null;
+        const teamId = action.team ? idOf(action.team, 'M') : null;
+        const teamProject = teamId ? (created.get(action.team)?.projectId || (context.teams || []).find((item) => item.id === teamId)?.project_id) : null;
+        const projectId = action.project ? idOf(action.project, 'P') : teamProject || null;
         const { data: task, error } = await createTask(action.title, {
+          teamId,
+          progress: action.status === 'done' ? 100 : action.progress,
+          details: action.description ? { description: action.description } : undefined,
           workspaceId,
           pageId: projectId,
           status: action.status || 'todo',
@@ -234,7 +294,6 @@ export async function executeAgentActions(actions, context) {
           sortOrder: Date.now()
         });
         if (error) throw error;
-        if (action.description) await updateTask(task.id, { details: { description: action.description } });
         results.push({ ok: true, text: info.text, href: `#kanban?task=${encodeURIComponent(task.id)}` });
       } else if (action.type === 'update_task') {
         const taskId = idOf(action.task, 'T');
@@ -244,6 +303,8 @@ export async function executeAgentActions(actions, context) {
         if (action.priority) updates.priority = action.priority;
         if (action.owner) updates.assignee_id = action.owner === 'none' ? null : idOf(action.owner, 'U');
         if (action.due) updates.due_date = action.due === 'none' ? null : action.due;
+        if (Number.isFinite(action.progress)) updates.progress = action.progress;
+        if (action.team) updates.team_id = action.team === 'none' ? null : idOf(action.team, 'M');
         const { error } = await updateTask(taskId, updates);
         if (error) throw error;
         results.push({ ok: true, text: info.text, href: `#kanban?task=${encodeURIComponent(taskId)}` });

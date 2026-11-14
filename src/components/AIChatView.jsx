@@ -99,7 +99,7 @@ function formatInline(str) {
 function AgentActionCard({ chatId, message }) {
   const [busy, setBusy] = useState(false);
   const refs = new Map(Object.entries(message.refMap || {}));
-  const created = new Map(message.actions.filter((a) => a.ref).map((a) => [a.ref, a.title]));
+  const created = new Map(message.actions.filter((a) => a.ref).map((a) => [a.ref, a.title || a.name]));
   const state = message.actionState || 'pending';
 
   async function apply() {

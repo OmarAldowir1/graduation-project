@@ -74,7 +74,7 @@ Copy `.env.example` to `.env` and add the Supabase project URL and anon key. The
 
 Then open the Supabase SQL Editor and run [`sql/schema.sql`](sql/schema.sql). This creates the workspace, page, task, comment, notification, invitation, and collaboration tables, policies, indexes, and triggers.
 
-For team features, also run [`sql/task-details.sql`](sql/task-details.sql), [`sql/team-chat.sql`](sql/team-chat.sql), [`sql/collaboration.sql`](sql/collaboration.sql), [`sql/projects.sql`](sql/projects.sql) and [`sql/workspace-features.sql`](sql/workspace-features.sql), in that order. `collaboration.sql` adds @mentions and targeted, throttled notifications; `projects.sql` enables projects; `workspace-features.sql` adds page history, public share links, team templates, custom task fields, page @mentions, daily due-date reminders, and lets every team member (not only the owner) see the team list. Until they're applied, the app still works, but mentions aren't stored and creating a project shows a message asking for the update.
+For team features, also run [`sql/task-details.sql`](sql/task-details.sql), [`sql/team-chat.sql`](sql/team-chat.sql), [`sql/collaboration.sql`](sql/collaboration.sql), [`sql/projects.sql`](sql/projects.sql) and [`sql/workspace-features.sql`](sql/workspace-features.sql) and [`sql/project-teams.sql`](sql/project-teams.sql), in that order. `collaboration.sql` adds @mentions and targeted, throttled notifications; `projects.sql` enables projects; `workspace-features.sql` adds page history, public share links, team templates, custom task fields, page @mentions, daily due-date reminders, and lets every team member (not only the owner) see the team list; `project-teams.sql` adds teams inside projects (leader, members, progress %) and the database rule that only a team's leader (or the team owner/admins) can edit that team's tasks, while the person assigned can update its status and progress. Until they're applied, the app still works, but mentions aren't stored and creating a project shows a message asking for the update.
 
 The database cannot be accessed from the copied frontend alone unless you have access to the same Supabase project or the owner gives you the correct credentials. Never commit `.env` or service-role keys.
 
@@ -89,6 +89,9 @@ npm run preview   # preview the production build
 ```
 
 ## Included features
+
+- **Progress report** (Project → Overview → Progress report): one click saves a report page with overall and per-team progress, work finished in the period, overdue and unowned tasks, what's due next and who did what. Groupify calculates every number; the AI only writes the short summary and next steps (optional).
+- **Teams inside projects** (Project → Teams tab): leaders, members, colour, per-team progress bars, leader-only editing enforced by the database, and AI actions that build a whole team plan (teams, leaders and their tasks) for you to approve.
 
 - Responsive desktop, tablet, and mobile layouts with light/dark themes.
 - Supabase email/password authentication, Google OAuth, password reset, and confirmation messaging.
