@@ -10,17 +10,20 @@ import { startNewPageIn } from '../../lib/projectActions.js';
 import { requestNewTask, openTaskDetails } from '../../lib/taskDetails.js';
 import { renderKanban } from './kanban.js';
 import { renderTeamsTab } from './projectTeams.js';
+import { renderCheckinsTab } from './projectCheckins.js';
+import { getCheckins, weekStart, expectedPeople, blockersOf } from '../../lib/checkins.js';
 import { getProjectTeams, teamStats, TEAM_COLORS } from '../../lib/teams.js';
 import { generateProjectReport } from '../../lib/projectReport.js';
 import { requestForm } from '../../lib/dialogs.js';
 import { loaderHtml } from '../../lib/loader.js';
 
 const TABS = [
-  { id: 'overview', label: 'Overview', icon: 'space_dashboard' },
-  { id: 'plan', label: 'Plan & discussion', icon: 'forum' },
-  { id: 'teams', label: 'Teams', icon: 'groups' },
-  { id: 'tasks', label: 'Tasks', icon: 'view_kanban' },
-  { id: 'pages', label: 'Pages', icon: 'description' }
+  { id: 'overview', label: 'Overview', icon: 'space_dashboard', hint: 'What’s next, what’s late, and the progress report' },
+  { id: 'plan', label: 'Plan & discussion', icon: 'forum', hint: 'The project plan page, with comments from the team' },
+  { id: 'teams', label: 'Teams', icon: 'groups', hint: 'Split the work into teams, each with a leader and progress' },
+  { id: 'checkins', label: 'Check-ins', icon: 'event_note', hint: 'Weekly: what everyone did, what’s next, what’s blocking them' },
+  { id: 'tasks', label: 'Tasks', icon: 'view_kanban', hint: 'All tasks in this project as a board, list, calendar or timeline' },
+  { id: 'pages', label: 'Pages', icon: 'description', hint: 'Notes, research and drafts that belong to this project' }
 ];
 
 function tabHref(projectId, tab) {
@@ -53,14 +56,14 @@ export function renderProjectBar({ project, activeTab, progress = null, members 
         ${members.length ? `<div class="project-members">${members.slice(0, 5).map((member) => avatar(member, 26)).join('')}${members.length > 5 ? `<span class="project-more">+${members.length - 5}</span>` : ''}<a href="#settings?section=team" class="project-invite" title="Invite teammates"><span class="material-symbols-outlined">person_add</span></a></div>` : ''}
       </div>
       <nav class="project-tabs" aria-label="Project sections">
-        ${TABS.map((tab) => `<a href="${tabHref(project.id, tab.id)}" class="${tab.id === activeTab ? 'is-active' : ''}" ${tab.id === activeTab ? 'aria-current="page"' : ''}><span class="material-symbols-outlined">${tab.icon}</span>${tab.label}</a>`).join('')}
+        ${TABS.map((tab) => `<a href="${tabHref(project.id, tab.id)}" title="${tab.hint}" class="${tab.id === activeTab ? 'is-active' : ''}" ${tab.id === activeTab ? 'aria-current="page"' : ''}><span class="material-symbols-outlined">${tab.icon}</span>${tab.label}</a>`).join('')}
       </nav>
     </div>`;
 }
 
 export async function renderProject(container, route) {
   const projectId = route?.segments?.[0];
-  const tab = ['tasks', 'pages', 'teams'].includes(route?.segments?.[1]) ? route.segments[1] : 'overview';
+  const tab = ['tasks', 'pages', 'teams', 'checkins'].includes(route?.segments?.[1]) ? route.segments[1] : 'overview';
   const workspaceId = AppState.workspace?.id;
 
   const [pagesResult, tasksResult, membersResult, teamsResult] = await Promise.all([
@@ -91,6 +94,12 @@ export async function renderProject(container, route) {
       unavailable: Boolean(teamsResult.unavailable),
       refresh: () => renderProject(container, route)
     });
+    return;
+  }
+
+  if (tab === 'checkins') {
+    container.innerHTML = `<div class="project-view">${bar}<section class="project-section project-checkins"></section></div>`;
+    await renderCheckinsTab(container.querySelector('.project-checkins'), { project, tasks, teams, members, workspaceId });
     return;
   }
 
@@ -144,11 +153,22 @@ export async function renderProject(container, route) {
       <span class="project-task-meta ${isOverdue(task) ? 'is-overdue' : ''}">${task.due_date ? (isOverdue(task) ? 'Overdue · ' : 'Due ') + escapeHtml(task.due_date) : ''}</span>
     </li>`;
 
+  const thisWeek = weekStart();
+  const { data: weekCheckins = [], unavailable: checkinsOff } = await getCheckins({ projectId: project.id, weeks: [thisWeek] });
+  const checkinPeople = expectedPeople(tasks, teams);
+  const iCheckedIn = weekCheckins.some((checkin) => checkin.user_id === AppState.user?.id);
+  const weekBlockers = blockersOf(weekCheckins);
+  const checkinNote = checkinsOff ? '' : `<a class="project-checkin-pill ${!iCheckedIn && checkinPeople.has(AppState.user?.id) ? 'is-due' : ''}" href="${tabHref(project.id, 'checkins')}">
+      <span class="material-symbols-outlined">event_note</span>
+      ${!iCheckedIn && checkinPeople.has(AppState.user?.id) ? '<strong>Your weekly check-in is due</strong>' : `<span>${weekCheckins.length}${checkinPeople.size ? `/${new Set([...checkinPeople, ...weekCheckins.map((c) => c.user_id)]).size}` : ''} checked in this week</span>`}
+      ${weekBlockers.length ? `<span class="is-blocker">🚧 ${weekBlockers.length} blocker${weekBlockers.length === 1 ? '' : 's'}</span>` : ''}
+    </a>`;
   const reports = projectPages.filter((page) => /^Progress report/.test(page.title || '')).sort((a, b) => String(b.created_at || b.updated_at).localeCompare(String(a.created_at || a.updated_at)));
   container.innerHTML = `<div class="project-view">${bar}
     <div class="project-report-row">
       <button type="button" class="project-btn primary" data-report><span class="material-symbols-outlined">monitoring</span> Progress report</button>
       ${reports[0] ? `<a class="project-link" href="#editor/${escapeHtml(reports[0].id)}">Last report: ${escapeHtml(timeAgo(reports[0].created_at || reports[0].updated_at))} →</a>` : '<span class="project-report-hint">One click: a summary of progress, teams, overdue work and who did what, for your team or supervisor.</span>'}
+      ${checkinNote}
     </div>
     ${overdue.length || unassigned.length ? `<div class="project-alerts">
       ${overdue.length ? `<span class="project-alert danger"><span class="material-symbols-outlined">schedule</span>${overdue.length} overdue</span>` : ''}

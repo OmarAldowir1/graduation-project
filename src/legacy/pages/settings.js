@@ -508,7 +508,7 @@ export async function renderSettings(container, route) {
   });
 
   container.querySelector('#settings-export-backup')?.addEventListener('click', async () => {
-    if (!workspaceId) return showToast('No workspace is selected', 'error');
+    if (!workspaceId) return showToast('No team is selected', 'error');
     const [{ data: pages, error: pagesError }, { data: tasks, error: tasksError }] = await Promise.all([
       getPages(workspaceId),
       getTasks({ workspaceId })
@@ -543,7 +543,7 @@ export async function renderSettings(container, route) {
     link.download = `${(AppState.workspace?.name || 'motion-workspace').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-backup.json`;
     link.click();
     URL.revokeObjectURL(link.href);
-    showToast('Workspace backup exported', 'success');
+    showToast('Team backup downloaded', 'success');
   });
 
   container.querySelector('#settings-import-backup')?.addEventListener('click', () => container.querySelector('#settings-backup-input')?.click());

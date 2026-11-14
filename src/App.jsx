@@ -33,6 +33,9 @@ import AIChatView from './components/AIChatView.jsx';
 import AIPageSidebar from './components/AIPageSidebar.jsx';
 import NotionAIFace from './components/NotionAIFace.jsx';
 import PresenceStack from './components/PresenceStack.jsx';
+import FocusZone from './components/FocusZone.jsx';
+import HelpPanel from './components/HelpPanel.jsx';
+import { FOCUS_EVENT, getFocus, focusPresence, isFocusRunning, pickAndFocus } from './lib/focusZone.js';
 import GroupifyLogo, { GroupifyLoader } from './components/GroupifyLogo.jsx';
 import { loaderHtml } from './lib/loader.js';
 import SharedPage from './components/SharedPage.jsx';
@@ -140,7 +143,7 @@ function SearchPalette({ isOpen, query, setQuery, results, loading, onClose, onS
         className="command-palette"
         role="dialog"
         aria-modal="true"
-        aria-label="Search workspace"
+        aria-label="Search your team"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="command-palette-search">
@@ -171,7 +174,7 @@ function SearchPalette({ isOpen, query, setQuery, results, loading, onClose, onS
         </div>
 
         <div className="command-palette-results">
-          {loading ? <p className="command-palette-empty">Searching your workspace...</p> : null}
+          {loading ? <p className="command-palette-empty">Searching your team…</p> : null}
           {!loading && query.trim() && results.length === 0 ? (
             <p className="command-palette-empty">No matching pages or tasks.</p>
           ) : null}
@@ -703,6 +706,24 @@ export default function App() {
     };
   }, []);
 
+  // Help: the ? button, the ? key, and a one-time hint for people new to Groupify.
+  const [helpOpen, setHelpOpen] = useState(false);
+  const helpSeenKey = `groupify.helpSeen.${AppState.user?.id || 'anon'}`;
+  const [helpNudge, setHelpNudge] = useState(false);
+  useEffect(() => {
+    const onKey = (event) => {
+      const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+      if (event.key === '?' && !typing && !event.metaKey && !event.ctrlKey) { event.preventDefault(); setHelpOpen((value) => !value); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  const dismissHelpNudge = useCallback((openHelp = false) => {
+    setHelpNudge(false);
+    try { localStorage.setItem(helpSeenKey, '1'); } catch { /* storage unavailable */ }
+    if (openHelp) setHelpOpen(true);
+  }, [helpSeenKey]);
+
   // Right-click (or the context-menu key) on the top-right picture opens a small menu.
   const [avatarMenu, setAvatarMenu] = useState(null);
   const avatarMenuRef = useRef(null);
@@ -810,6 +831,14 @@ export default function App() {
   }, [currentUserId, currentWorkspaceId]);
 
   const presenceRef = useRef(null);
+  // Focus Zone: teammates see who is focusing (through presence), so no table is needed.
+  const [focusSession, setFocusSession] = useState(() => getFocus());
+  useEffect(() => {
+    const sync = () => setFocusSession(getFocus());
+    window.addEventListener(FOCUS_EVENT, sync);
+    return () => window.removeEventListener(FOCUS_EVENT, sync);
+  }, []);
+  const focusMeta = useMemo(() => focusPresence(focusSession), [focusSession]);
   const currentPageId = ['editor', 'project'].includes(route.path) ? route.segments[0] || null : null;
   const currentPageTitle = currentPageId ? sidebarPages.find((page) => page.id === currentPageId)?.title || '' : '';
   const presenceMeta = useMemo(() => ({
@@ -818,8 +847,9 @@ export default function App() {
     avatar_url: AppState.profile?.avatar_url || '',
     path: route.path,
     page_id: currentPageId,
-    label: currentPageTitle
-  }), [currentUserId, route.path, currentPageId, currentPageTitle]);
+    label: currentPageTitle,
+    focus: focusMeta
+  }), [currentUserId, route.path, currentPageId, currentPageTitle, focusMeta]);
   const presenceMetaRef = useRef(presenceMeta);
 
   useEffect(() => {
@@ -959,6 +989,9 @@ export default function App() {
   useEffect(() => {
     const onCrumb = (e) => setBreadcrumb(e.detail || '');
     const onToast = (e) => {
+      // While the Focus Zone is open, only errors interrupt.
+      const focus = getFocus();
+      if (isFocusRunning(focus) && !focus.minimized && e.detail?.type !== 'error') return;
       setToast(e.detail);
       window.setTimeout(() => setToast(null), 3000);
     };
@@ -1037,7 +1070,7 @@ export default function App() {
         if (pendingInviteToken) {
           const { error: inviteError } = await acceptWorkspaceInvitation(pendingInviteToken);
           if (inviteError) showToast(inviteError.message || 'Could not accept invitation', 'error');
-          else showToast('You joined the workspace', 'success');
+          else showToast('You joined the team', 'success');
           localStorage.removeItem('motion-pending-invite');
           window.location.hash = 'dashboard';
         }
@@ -1077,6 +1110,10 @@ export default function App() {
         showToast(err?.message || 'Failed to bootstrap app', 'error');
       } finally {
         setIsBootstrapping(false);
+        // First visit for this person: offer the short "How Groupify works" guide once.
+        try {
+          if (AppState.user?.id && localStorage.getItem(`groupify.helpSeen.${AppState.user.id}`) !== '1') setHelpNudge(true);
+        } catch { /* storage unavailable */ }
       }
     }
 
@@ -1122,7 +1159,7 @@ export default function App() {
   // New page creation via modal
   async function handleCreatePage(title, template = { pageType: 'note', content: {} }) {
     if (!AppState.workspace) {
-      showToast('No workspace found. Please create one first.', 'error');
+      showToast('No team found. Please create one first.', 'error');
       return;
     }
 
@@ -1139,14 +1176,14 @@ export default function App() {
     if (!AppState.user?.id) return;
     const { data, error } = await createWorkspace(name, AppState.user.id);
     if (error) {
-      showToast(`Could not create workspace: ${error.message}`, 'error');
+      showToast(`Could not create team: ${error.message}`, 'error');
       return;
     }
     AppState.workspaces = [data, ...(AppState.workspaces || [])];
     AppState.workspace = data;
     localStorage.setItem('motion-workspace-id', data.id);
     forceUpdate((value) => value + 1);
-    showToast('Workspace created', 'success');
+    showToast('Team created', 'success');
     window.location.hash = 'dashboard';
   }
 
@@ -1160,7 +1197,7 @@ export default function App() {
       .toUpperCase()
       .slice(0, 2) || 'U';
 
-  const workspaceName = AppState.workspace?.name || 'Premium Workspace';
+  const workspaceName = AppState.workspace?.name || 'Your team';
 
   // Close notification dropdown when clicking outside
   useEffect(() => {
@@ -1250,17 +1287,22 @@ export default function App() {
 
         <nav className="sidebar-nav" aria-label="Main">
           {[
-            { key: 'home', href: '#dashboard', icon: 'home', label: 'Home', active: route.path === 'dashboard' },
-            { key: 'mine', href: '#kanban?assignee=mine', icon: 'task_alt', label: 'My tasks', active: route.path === 'kanban' && route.query.get('assignee') === 'mine' },
-            { key: 'chat', href: '#chat', icon: 'forum', label: 'Team chat', active: route.path === 'chat' },
-            { key: 'ai', href: '#ai-chat', icon: 'auto_awesome', label: 'Ask AI', active: route.path === 'ai-chat' }
+            { key: 'home', href: '#dashboard', icon: 'home', label: 'Home', hint: 'Your day: what’s due, your projects and team activity', active: route.path === 'dashboard' },
+            { key: 'mine', href: '#kanban?assignee=mine', icon: 'task_alt', label: 'My tasks', hint: 'Every task assigned to you, across all projects', active: route.path === 'kanban' && route.query.get('assignee') === 'mine' },
+            { key: 'chat', href: '#chat', icon: 'forum', label: 'Team chat', hint: 'Talk with your whole team in one place', active: route.path === 'chat' },
+            { key: 'ai', href: '#ai-chat', icon: 'auto_awesome', label: 'Ask AI', hint: 'Ask questions, or let the AI plan projects and create tasks for you to approve', active: route.path === 'ai-chat' }
           ].map((item) => (
-            <a key={item.key} href={item.href} className={`sidebar-link ${item.active ? 'is-active' : ''}`} aria-current={item.active ? 'page' : undefined}>
+            <a key={item.key} href={item.href} title={item.hint} className={`sidebar-link ${item.active ? 'is-active' : ''}`} aria-current={item.active ? 'page' : undefined}>
               <span className="material-symbols-outlined">{item.icon}</span>
               <span>{item.label}</span>
               {item.key === 'mine' && myOpenTaskCount > 0 ? <span className="sidebar-count">{myOpenTaskCount}</span> : null}
             </a>
           ))}
+          <button type="button" className={`sidebar-link sidebar-focus ${focusSession && !focusSession.finished ? 'is-running' : ''}`} onClick={pickAndFocus} title="Work on one task with a timer, no distractions">
+            <span className="material-symbols-outlined">timer</span>
+            <span>{focusSession && !focusSession.finished ? 'Focusing…' : 'Focus'}</span>
+            {focusSession && !focusSession.finished ? <span className="sidebar-focus-dot" aria-hidden="true" /> : null}
+          </button>
         </nav>
 
         {route.path === 'ai-chat' ? (
@@ -1402,9 +1444,9 @@ export default function App() {
             )}
           </section>
 
-          <section className="sidebar-section" aria-label="Other pages">
-            <div className="sidebar-section-head">
-              <span>Other pages</span>
+          <section className="sidebar-section" aria-label="Notes">
+            <div className="sidebar-section-head" title="Pages that aren’t part of a project: meeting notes, ideas, drafts">
+              <span>Notes</span>
               <button type="button" onClick={() => setNewPageModalOpen(true)} aria-label="New page" title="New page (Ctrl+N)">
                 <span className="material-symbols-outlined">add</span>
               </button>
@@ -1412,18 +1454,18 @@ export default function App() {
             {otherPages.length ? (
               <SidebarNotesTree pages={otherPages} searchQuery="" onPageMoved={refreshSidebarPages} />
             ) : (
-              <p className="sidebar-hint">Pages that don’t belong to a project show up here.</p>
+              <p className="sidebar-hint">Meeting notes, ideas and drafts that aren’t part of a project live here.</p>
             )}
             <div className="sidebar-more">
-              <a href="#notes">All pages</a>
-              <a href="#kanban">All tasks</a>
-              <a href="#database">Table view</a>
+              <a href="#notes" title="Every page in your team, in projects or not">All pages</a>
+              <a href="#kanban" title="Every task in your team, as a board, list, calendar or timeline">All tasks</a>
+              <a href="#database" title="Tasks and pages in a spreadsheet-style table">Table view</a>
             </div>
           </section>
         </div>
 
         <div className="sidebar-footer">
-          <a href="#settings?section=team" className="sidebar-link">
+          <a href="#settings?section=team" className="sidebar-link" title="See your teammates and invite new people">
             <span className="material-symbols-outlined">group</span>
             <span>Team{teamSize > 1 ? ` · ${teamSize}` : ''}</span>
             <span className="sidebar-invite">Invite</span>
@@ -1432,7 +1474,7 @@ export default function App() {
             <span className="material-symbols-outlined">settings</span>
             <span>Settings</span>
           </a>
-          <button type="button" className="sidebar-link" onClick={() => setNewWorkspaceModalOpen(true)}>
+          <button type="button" className="sidebar-link" onClick={() => setNewWorkspaceModalOpen(true)} title="Start a separate team, for example for another course">
             <span className="material-symbols-outlined">add_business</span>
             <span>New team</span>
           </button>
@@ -1484,13 +1526,22 @@ export default function App() {
               className="workspace-search-trigger"
               onClick={openSearch}
               title="Search (⌘K)"
-              aria-label="Search workspace"
+              aria-label="Search your team"
             >
               <span className="material-symbols-outlined" style={{ fontSize: '1.25rem' }}>
                 search
               </span>
               <span className="workspace-search-label">Search anything</span>
               <kbd className="workspace-search-shortcut">⌘ K</kbd>
+            </button>
+
+            <button
+              className="theme-toggle help-toggle"
+              onClick={() => { setHelpOpen(true); if (helpNudge) dismissHelpNudge(); }}
+              title="How Groupify works (?)"
+              aria-label="Help: how Groupify works"
+            >
+              <span className="material-symbols-outlined" style={{ fontSize: '1.25rem' }}>help</span>
             </button>
 
             <button
@@ -1732,6 +1783,24 @@ export default function App() {
         </div>
       </main>
 
+      <FocusZone />
+      <HelpPanel
+        open={helpOpen}
+        onClose={() => setHelpOpen(false)}
+        project={projects.find((item) => item.id === activeProjectId) || projects[0] || null}
+        onNewProject={() => startNewProject()}
+      />
+      {helpNudge && !helpOpen ? (
+        <div className="help-nudge" role="status">
+          <span className="help-nudge-icon" aria-hidden="true">👋</span>
+          <div><strong>New to Groupify?</strong><p>See how projects, teams and tasks fit together. It takes a minute.</p></div>
+          <div className="help-nudge-actions">
+            <button type="button" className="gs-btn gs-btn-primary" onClick={() => dismissHelpNudge(true)}>Show me</button>
+            <button type="button" className="gs-btn gs-btn-ghost" onClick={() => dismissHelpNudge(false)}>Not now</button>
+          </div>
+        </div>
+      ) : null}
+
       {/* Toast */}
       {toast ? (
         <div className={`toast toast-${toast.type || 'success'}`}>{toast.message}</div>
@@ -1787,9 +1856,9 @@ export default function App() {
         isOpen={newWorkspaceModalOpen}
         onClose={() => setNewWorkspaceModalOpen(false)}
         onSubmit={handleCreateWorkspace}
-        title="Create Workspace"
-        placeholder="Workspace name..."
-        submitText="Create workspace"
+        title="Create a new team"
+        placeholder="Team name, e.g. Graduation project team"
+        submitText="Create team"
       />
     </div>
   );

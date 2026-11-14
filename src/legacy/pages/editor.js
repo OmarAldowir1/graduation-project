@@ -536,7 +536,7 @@ export async function renderEditor(container, route) {
       return;
     }
     if (type === 'page') {
-      if (!AppState.workspace?.id) return showToast('No workspace is selected', 'error');
+      if (!AppState.workspace?.id) return showToast('No team is selected', 'error');
       const title = await requestInput('New page title:', 'Untitled');
       if (!title?.trim()) return;
       const { data: child, error } = await createPage(AppState.workspace.id, title.trim(), 'note', {}, page.id);
@@ -720,7 +720,7 @@ export async function renderEditor(container, route) {
   });
 
   container.querySelector('#editor-add-task')?.addEventListener('click', async () => {
-    if (!AppState.workspace?.id) return showToast('No workspace is selected', 'error');
+    if (!AppState.workspace?.id) return showToast('No team is selected', 'error');
     const { data: members } = await getWorkspaceMembers(AppState.workspace.id);
     const draft = await requestNewTask({ members: members || [], heading: `New task on “${page.title || 'Untitled'}”` });
     if (!draft) return;
@@ -849,7 +849,7 @@ export async function renderEditor(container, route) {
   });
 
   container.querySelector('#editor-duplicate-page')?.addEventListener('click', async () => {
-    if (!AppState.workspace?.id) return showToast('No workspace is selected', 'error');
+    if (!AppState.workspace?.id) return showToast('No team is selected', 'error');
     const title = `${page.title || 'Untitled'} copy`;
     const html = notionEditor ? notionEditor.getHtml() : '';
     const duplicateContent = { ...(page.content || {}), html: sanitizeHtml(html) };
@@ -882,7 +882,7 @@ export async function renderEditor(container, route) {
   });
 
   container.querySelector('#editor-move-page')?.addEventListener('click', async () => {
-    if (!AppState.workspace?.id) return showToast('No workspace is selected', 'error');
+    if (!AppState.workspace?.id) return showToast('No team is selected', 'error');
     const { data: pages, error: pagesError } = await getPages(AppState.workspace.id);
     if (pagesError) return showToast(`Could not load pages: ${pagesError.message}`, 'error');
     const candidates = (pages || []).filter(
@@ -1294,7 +1294,7 @@ async function pickPage(candidates) {
 }
 
 function renderComment(comment, currentUserId, depth = 0, members = []) {
-  const author = comment.author?.name || 'Workspace member';
+  const author = comment.author?.name || 'Team member';
   const isResolved = String(comment.content || '').startsWith('[RESOLVED] ');
   const displayContent = isResolved ? comment.content.replace('[RESOLVED] ', '') : comment.content;
 

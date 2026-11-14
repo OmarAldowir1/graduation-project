@@ -13,7 +13,7 @@ export async function renderNotes(container) {
   const workspaceId = AppState.workspace?.id;
   if (!workspaceId) {
     container.innerHTML =
-      `<div class="empty-state" style="min-height:60vh;"><span class="material-symbols-outlined">folder_off</span><h3>No workspace found</h3><p>Please create a workspace first.</p></div>`;
+      `<div class="empty-state" style="min-height:60vh;"><span class="material-symbols-outlined">folder_off</span><h3>No team found</h3><p>Please create a team first.</p></div>`;
     return;
   }
 

@@ -7,6 +7,7 @@ import { chatWithMotionAI } from './motionAI.js';
 import { markdownToHtml } from './markdown.js';
 import { escapeHtml } from './sanitize.js';
 import { averageProgress, taskProgress } from './teams.js';
+import { getCheckins, weekStart, shiftWeek, MOODS } from './checkins.js';
 
 const DAY = 86400000;
 
@@ -28,7 +29,7 @@ function bar(percent) {
 const isDone = (task) => task.status === 'done' || task.completed;
 
 // ---------- 1. Facts (pure calculation) ----------
-export function buildReportFacts({ project, tasks, teams = [], members = [], comments = [], days = 7, now = new Date() }) {
+export function buildReportFacts({ project, tasks, teams = [], members = [], comments = [], checkins = [], days = 7, now = new Date() }) {
   const since = new Date(now.getTime() - days * DAY);
   const today = dateKey(now);
   const soon = dateKey(new Date(now.getTime() + 7 * DAY));
@@ -86,8 +87,18 @@ export function buildReportFacts({ project, tasks, teams = [], members = [], com
     lateDays: task.due_date && task.due_date < today ? Math.round((new Date(`${today}T00:00`) - new Date(`${task.due_date}T00:00`)) / DAY) : 0
   });
 
+  // Weekly check-ins in the period: blockers and mood.
+  const latestByPerson = new Map();
+  [...checkins].sort((a, b) => String(b.week_start).localeCompare(String(a.week_start))).forEach((checkin) => {
+    if (!latestByPerson.has(checkin.user_id)) latestByPerson.set(checkin.user_id, checkin);
+  });
+  const checkinBlockers = [...latestByPerson.values()].filter((checkin) => checkin.blockers && checkin.blockers.trim())
+    .map((checkin) => ({ name: checkin.user?.name || nameOf(checkin.user_id), text: checkin.blockers.trim().slice(0, 300) }));
+  const moods = [3, 2, 1].map((value) => ({ emoji: MOODS[value].emoji, count: [...latestByPerson.values()].filter((checkin) => checkin.mood === value).length })).filter((mood) => mood.count);
+
   return {
     project: project.title || 'Untitled project',
+    checkins: { people: latestByPerson.size, blockers: checkinBlockers, moods },
     days,
     from: dateKey(since),
     to: today,
@@ -116,6 +127,8 @@ function factsAsText(facts) {
     'OVERDUE:', list(facts.overdue, (t) => `- ${t.title}: ${t.lateDays} days late, owner ${t.owner}`),
     'NO OWNER:', list(facts.unassigned, (t) => `- ${t.title}`),
     'DUE IN THE NEXT 7 DAYS:', list(facts.upcoming, (t) => `- ${t.title}: due ${t.due}, owner ${t.owner}`),
+    `CHECK-INS: ${facts.checkins.people} people checked in${facts.checkins.moods.length ? ` · mood ${facts.checkins.moods.map((m) => `${m.emoji}${m.count}`).join(' ')}` : ''}`,
+    'BLOCKERS REPORTED IN CHECK-INS:', list(facts.checkins.blockers, (b) => `- ${b.name}: ${b.text}`),
     'CONTRIBUTIONS THIS PERIOD:', list(facts.contributions, (p) => `- ${p.name}: finished ${p.finished}, comments ${p.comments}, open tasks ${p.open}`)
   ].join('\n');
 }
@@ -123,7 +136,7 @@ function factsAsText(facts) {
 const SUMMARY_PROMPT = `Write the opening of a short progress report for a student project team and their supervisor, using ONLY the attached facts.
 Return Markdown with exactly two parts and nothing else:
 1. A heading "### Summary" followed by 2–3 sentences: overall status (on track / at risk / behind) and the most important change this period.
-2. A heading "### Recommended next steps" followed by 2–4 bullet points with concrete, practical actions (who should do what), focused on overdue work, tasks without an owner, and slow teams.
+2. A heading "### Recommended next steps" followed by 2–4 bullet points with concrete, practical actions (who should do what), focused on blockers reported in check-ins, overdue work, tasks without an owner, and slow teams.
 Do not repeat full task lists, do not invent people, tasks or numbers, and keep it under 150 words.`;
 
 export async function writeReportSummary(facts) {
@@ -160,6 +173,7 @@ export function renderReportHtml(facts, { summaryMarkdown = '', author = '' } = 
 
   parts.push('<h2>⚠️ Needs attention</h2>');
   const attention = [
+    ...facts.checkins.blockers.map((b) => `<strong>🚧 Blocker (${e(b.name)}):</strong> ${e(b.text)}`),
     ...facts.overdue.map((t) => `<strong>Overdue ${t.lateDays} day${t.lateDays === 1 ? '' : 's'}:</strong> ${e(t.title)} — ${e(t.owner)}`),
     ...facts.unassigned.slice(0, 10).map((t) => `<strong>No owner:</strong> ${e(t.title)}`)
   ];
@@ -168,6 +182,9 @@ export function renderReportHtml(facts, { summaryMarkdown = '', author = '' } = 
   parts.push('<h2>➡️ Coming up (next 7 days)</h2>');
   parts.push(items(facts.upcoming, (t) => `${e(t.title)} — ${e(t.owner)} · due ${e(shortDate(t.due))}`, 'Nothing is due in the next 7 days.'));
 
+  if (facts.checkins.people) {
+    parts.push(`<p><strong>Weekly check-ins:</strong> ${facts.checkins.people} ${facts.checkins.people === 1 ? 'person' : 'people'} checked in${facts.checkins.moods.length ? ` · mood ${facts.checkins.moods.map((m) => `${m.emoji} ${m.count}`).join(' · ')}` : ''}.</p>`);
+  }
   parts.push('<h2>🙌 Contributions this period</h2>');
   parts.push(items(facts.contributions, (p) => `<strong>${e(p.name)}</strong> — ${p.finished} task${p.finished === 1 ? '' : 's'} finished · ${p.comments} comment${p.comments === 1 ? '' : 's'} · ${p.open} open`, 'No activity recorded in this period.'));
   return parts.join('');
@@ -183,8 +200,13 @@ async function loadComments(taskIds, pageIds) {
 }
 
 export async function generateProjectReport({ workspaceId, project, tasks, teams, members, pageIds = [], days = 7, author = '', useAI = true }) {
-  const comments = await loadComments(tasks.map((task) => task.id), pageIds);
-  const facts = buildReportFacts({ project, tasks, teams, members, comments, days });
+  const weeks = [weekStart()];
+  for (let i = 1; i < Math.ceil(days / 7); i += 1) weeks.push(shiftWeek(weeks[0], -i));
+  const [comments, checkinsResult] = await Promise.all([
+    loadComments(tasks.map((task) => task.id), pageIds),
+    getCheckins({ projectId: project.id, weeks })
+  ]);
+  const facts = buildReportFacts({ project, tasks, teams, members, comments, checkins: checkinsResult.data || [], days });
   let summaryMarkdown = '';
   let aiError = '';
   if (useAI) {

@@ -7,7 +7,8 @@ const ICONS = {
   task_comment: 'forum',
   task_assigned: 'assignment_ind',
   page_updated: 'edit_note',
-  task_due: 'alarm'
+  task_due: 'alarm',
+  checkin_due: 'event_note'
 };
 
 function quoted(value, fallback) {
@@ -44,6 +45,9 @@ export function describeNotification(notification) {
     case 'task_due':
       text = payload.when === 'overdue' ? `Overdue: ${taskTarget}` : `Reminder: ${taskTarget} is due ${payload.when === 'today' ? 'today' : 'tomorrow'}`;
       break;
+    case 'checkin_due':
+      text = `Weekly check-in for ${quoted(payload.title, 'your project')}: how did your week go?`;
+      break;
     default:
       text = payload.message || payload.title || String(notification?.type || 'Workspace update').replaceAll('_', ' ');
   }
@@ -56,6 +60,7 @@ export function describeNotification(notification) {
   if (notification?.page_id) href = `editor/${notification.page_id}`;
   else if (payload.task_id) href = `kanban?task=${encodeURIComponent(payload.task_id)}`;
   else if (notification?.type === 'task_assigned') href = 'kanban';
+  if (notification?.type === 'checkin_due' && payload.project_id) href = `project/${payload.project_id}/checkins`;
 
   return {
     text,

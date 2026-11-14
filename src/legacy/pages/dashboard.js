@@ -9,6 +9,9 @@ import { listProjects, buildProjectIndex, tasksForProject, projectProgress, isOv
 import { startNewProject } from '../../lib/projectActions.js';
 import { requestNewTask, openTaskDetails } from '../../lib/taskDetails.js';
 import { describeNotification } from '../../lib/notificationText.js';
+import { pickAndFocus } from '../../lib/focusZone.js';
+import { getMyCheckinsForWeek } from '../../lib/checkins.js';
+import { getWorkspaceTeams } from '../../lib/teams.js';
 
 function checklistKey() {
   return `motion-onboarding-dismissed-${AppState.workspace?.id || 'none'}`;
@@ -22,12 +25,14 @@ export async function renderDashboard(container) {
   const workspaceId = AppState.workspace?.id;
   const me = AppState.user?.id;
 
-  const [pagesResult, tasksResult, membersResult, notificationsResult, commentsResult] = await Promise.all([
+  const [pagesResult, tasksResult, membersResult, notificationsResult, commentsResult, myCheckinsResult, teamsResult] = await Promise.all([
     workspaceId ? getPages(workspaceId) : Promise.resolve({ data: [] }),
     getTasks({ workspaceId }),
     workspaceId ? getWorkspaceMembers(workspaceId) : Promise.resolve({ data: [] }),
     getNotifications(8),
-    supabase.from('comments').select('id', { count: 'exact', head: true })
+    supabase.from('comments').select('id', { count: 'exact', head: true }),
+    workspaceId ? getMyCheckinsForWeek(workspaceId, me) : Promise.resolve({ data: [] }),
+    workspaceId ? getWorkspaceTeams(workspaceId) : Promise.resolve({ data: [] })
   ]);
   if (tasksResult.error || pagesResult.error) {
     const message = (tasksResult.error || pagesResult.error)?.message || 'Please try again.';
@@ -45,6 +50,13 @@ export async function renderDashboard(container) {
   const myTasks = sortTasksForFocus(tasks.filter((task) => task.assignee_id === me && task.status !== 'done' && !task.completed));
   const unassigned = tasks.filter((task) => !task.assignee_id && task.status !== 'done' && !task.completed);
   const overdueMine = myTasks.filter((task) => isOverdue(task));
+  // Weekly check-ins still due: projects where I have open tasks or am in a team.
+  const checkedIn = new Set((myCheckinsResult.data || []).map((row) => row.project_id));
+  const myProjectIds = new Set([
+    ...myTasks.map((task) => projectIndex.get(task.page_id)).filter(Boolean),
+    ...(teamsResult.data || []).filter((team) => team.leader_id === me || (team.members || []).some((member) => member.user_id === me)).map((team) => team.project_id)
+  ]);
+  const checkinsDue = myCheckinsResult.unavailable ? [] : [...myProjectIds].filter((id) => projectById.has(id) && !checkedIn.has(id)).map((id) => projectById.get(id));
   const firstName = escapeHtml((AppState.profile?.name || AppState.user?.email?.split('@')[0] || 'there').split(' ')[0]);
   const teamName = escapeHtml(AppState.workspace?.name || 'your team');
 
@@ -115,10 +127,13 @@ export async function renderDashboard(container) {
         <div class="home-actions">
           <button type="button" class="project-btn primary" data-new-project><span class="material-symbols-outlined">create_new_folder</span> New project</button>
           <button type="button" class="project-btn" data-new-task><span class="material-symbols-outlined">add_task</span> Add task</button>
+          <button type="button" class="project-btn" data-focus-start title="Work on one thing with a timer, no distractions"><span class="material-symbols-outlined">timer</span> Focus</button>
         </div>
       </header>
 
       ${dueSoonMine.length ? `<a class="home-due-alert" href="#kanban?assignee=mine"><span class="material-symbols-outlined">alarm</span><span><strong>${dueSoonMine.length === 1 ? 'One of your tasks is' : `${dueSoonMine.length} of your tasks are`} due ${dueSoonMine.every((task) => task.due_date === todayStr) ? 'today' : 'by tomorrow'}:</strong> ${dueSoonMine.slice(0, 3).map((task) => escapeHtml(task.title)).join(', ')}${dueSoonMine.length > 3 ? '…' : ''}</span></a>` : ''}
+
+      ${checkinsDue.length ? `<div class="home-checkin-alert"><span class="material-symbols-outlined">event_note</span><span><strong>Weekly check-in:</strong> tell your team how the week went in ${checkinsDue.map((project) => `<a href="#project/${escapeHtml(project.id)}/checkins">${escapeHtml(project.icon || '📁')} ${escapeHtml(project.title || 'Untitled project')}</a>`).join(', ')}.</span></div>` : ''}
 
       ${projects.length ? `<section class="home-digest" aria-label="This week">
         <h2>This week in ${teamName}</h2>
@@ -176,6 +191,7 @@ export async function renderDashboard(container) {
     try { localStorage.setItem(checklistKey(), '1'); } catch { /* private mode */ }
     container.querySelector('.home-checklist')?.remove();
   });
+  container.querySelector('[data-focus-start]')?.addEventListener('click', () => pickAndFocus());
   container.querySelector('[data-new-task]')?.addEventListener('click', async () => {
     const draft = await requestNewTask({ members, projects, projectId: projects[0]?.id || '' });
     if (!draft) return;

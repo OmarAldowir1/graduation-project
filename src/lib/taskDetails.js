@@ -5,6 +5,7 @@ import { escapeHtml as esc } from './sanitize.js';
 import { AppState, showToast } from '../legacy/app.js';
 import { requestForm } from './dialogs.js';
 import { loadTaskFields, renderFieldInputs, readFieldInputs } from './taskFields.js';
+import { requestFocus } from './focusZone.js';
 import { getWorkspaceTeams, taskPermissions, taskProgress, workspaceRole, TEAM_COLORS } from './teams.js';
 
 let closeActiveTask = null;
@@ -16,7 +17,7 @@ export function openTaskDetails(task, members = [], onSaved = () => {}, { teams:
   const backdrop = document.createElement('div');
   backdrop.className = 'task-detail-backdrop';
   backdrop.innerHTML = `<section class="task-detail-panel" role="dialog" aria-modal="true" aria-label="Task details">
-    <header><div><small>TASK DETAILS</small><h2>Instructions &amp; progress</h2></div><button type="button" data-close aria-label="Close task details">×</button></header>
+    <header><div><small>TASK DETAILS</small><h2>Instructions &amp; progress</h2></div><div class="task-detail-head-actions">${task.status !== 'done' ? '<button type="button" class="task-focus-btn" data-focus title="Work on this task with a timer, no distractions">🎯 Focus</button>' : ''}<button type="button" data-close aria-label="Close task details">×</button></div></header>
     <p class="task-detail-lock" data-lock hidden></p>
     <form class="task-detail-form">
       <label>Title<input name="title" value="${esc(task.title || '')}" required maxlength="500" /></label>
@@ -45,6 +46,7 @@ export function openTaskDetails(task, members = [], onSaved = () => {}, { teams:
   const close = () => { stopLive?.(); backdrop.remove(); window.removeEventListener('hashchange', close); closeActiveTask = null; if(oldFocus?.isConnected) oldFocus.focus(); };
   closeActiveTask = close;
   backdrop.querySelector('[data-close]').addEventListener('click', close);
+  backdrop.querySelector('[data-focus]')?.addEventListener('click', () => { close(); requestFocus(task); });
   backdrop.addEventListener('click', event => { if(event.target === backdrop) close(); });
   backdrop.addEventListener('keydown', event => {
     if(event.key === 'Escape') { event.stopPropagation(); close(); }
@@ -160,7 +162,7 @@ export function openTaskDetails(task, members = [], onSaved = () => {}, { teams:
     if(!backdrop.isConnected) return;
     const box = backdrop.querySelector('[data-comments]');
     box.innerHTML = error ? `<p>${esc(error.message)}</p>` : data?.length ? data.map(comment => {
-      const name = comment.author?.name || 'Workspace member';
+      const name = comment.author?.name || 'Team member';
       return `<article><span class="task-comment-avatar" aria-hidden="true">${esc(name.slice(0,1).toUpperCase())}</span><div><strong>${esc(name)}</strong><time>${esc(new Date(comment.created_at).toLocaleString())}</time><p>${renderMentionsHtml(comment.content, members, Array.isArray(comment.mentions) ? comment.mentions : null)}</p></div></article>`;
     }).join('') : '<p>No comments yet. Ask a question or @mention someone to bring them in.</p>';
     box.scrollTop = box.scrollHeight;

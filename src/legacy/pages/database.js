@@ -12,7 +12,7 @@ export async function renderDatabase(container) {
 
   const workspaceId = AppState.workspace?.id;
   if (!workspaceId) {
-    container.innerHTML = `<div class="empty-state" style="min-height:60vh;"><span class="material-symbols-outlined">folder_off</span><h3>No workspace</h3><p>Create a workspace first.</p></div>`;
+    container.innerHTML = `<div class="empty-state" style="min-height:60vh;"><span class="material-symbols-outlined">folder_off</span><h3>No team yet</h3><p>Create a team first.</p></div>`;
     return;
   }
 

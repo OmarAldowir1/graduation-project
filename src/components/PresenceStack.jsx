@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { joinFocus } from '../lib/focusZone.js';
 
 const PLACES = {
   dashboard: 'Home',
@@ -11,6 +12,13 @@ const PLACES = {
   settings: 'Settings',
   profile: 'Profile'
 };
+
+function focusText(focus, now) {
+  if (!focus) return '';
+  if (focus.paused) return `🎯 Focusing on “${focus.title}” · paused`;
+  const minutes = Math.max(0, Math.ceil((Number(focus.ends_at) - now) / 60000));
+  return `🎯 Focusing on “${focus.title}” · ${minutes} min left`;
+}
 
 function describePlace(person) {
   if (person.path === 'editor' || person.path === 'project') return person.label ? `Viewing “${person.label}”` : 'Viewing a page';
@@ -42,6 +50,15 @@ export default function PresenceStack({ people, currentUserId, currentPageId }) 
     return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
   }, [open]);
 
+  // Refresh "min left" every 30 seconds while someone is focusing.
+  const [now, setNow] = useState(() => Date.now());
+  const anyFocus = people.some((person) => person.focus && person.user_id !== currentUserId);
+  useEffect(() => {
+    if (!anyFocus) return undefined;
+    const id = window.setInterval(() => setNow(Date.now()), 30000);
+    return () => window.clearInterval(id);
+  }, [anyFocus]);
+
   const others = people.filter((person) => person.user_id !== currentUserId);
   if (!others.length) return null;
   const herePeople = currentPageId ? others.filter((person) => person.page_id === currentPageId) : [];
@@ -58,8 +75,9 @@ export default function PresenceStack({ people, currentUserId, currentPageId }) 
         title={herePeople.length ? `${herePeople.map((person) => person.name).join(', ')} also on this page` : 'Who’s online'}
       >
         {visible.map((person) => (
-          <span key={person.user_id} className={`presence-ring ${person.page_id && person.page_id === currentPageId ? 'is-here' : ''}`}>
+          <span key={person.user_id} className={`presence-ring ${person.page_id && person.page_id === currentPageId ? 'is-here' : ''} ${person.focus ? 'is-focusing' : ''}`} title={person.focus ? focusText(person.focus, now) : undefined}>
             <Avatar person={person} />
+            {person.focus ? <span className="presence-focus-badge" aria-hidden="true">🎯</span> : null}
           </span>
         ))}
         {others.length > visible.length ? <span className="presence-more">+{others.length - visible.length}</span> : null}
@@ -68,23 +86,27 @@ export default function PresenceStack({ people, currentUserId, currentPageId }) 
         <div className="presence-popover" role="dialog" aria-label="Online teammates">
           <p className="presence-popover-title">Online now · {others.length}</p>
           {others.map((person) => (
-            <button
-              key={person.user_id}
-              type="button"
-              className="presence-row"
-              disabled={!person.page_id && !PLACES[person.path]}
-              onClick={() => {
-                setOpen(false);
-                window.location.hash = person.page_id ? `editor/${person.page_id}` : (person.path || 'dashboard');
-              }}
-            >
-              <span className="presence-ring is-online"><Avatar person={person} size={30} /></span>
-              <span className="presence-row-text">
-                <strong>{person.name}</strong>
-                <small>{person.page_id && person.page_id === currentPageId ? 'On this page with you' : describePlace(person)}</small>
-              </span>
-              {person.page_id && person.page_id !== currentPageId ? <span className="material-symbols-outlined presence-go" aria-hidden="true">arrow_forward</span> : null}
-            </button>
+            <div key={person.user_id} className={`presence-row-wrap ${person.focus ? 'is-focusing' : ''}`}>
+              <button
+                type="button"
+                className="presence-row"
+                disabled={!person.page_id && !PLACES[person.path]}
+                onClick={() => {
+                  setOpen(false);
+                  window.location.hash = person.page_id ? `editor/${person.page_id}` : (person.path || 'dashboard');
+                }}
+              >
+                <span className="presence-ring is-online"><Avatar person={person} size={30} /></span>
+                <span className="presence-row-text">
+                  <strong>{person.name}</strong>
+                  <small>{person.focus ? focusText(person.focus, now) : person.page_id && person.page_id === currentPageId ? 'On this page with you' : describePlace(person)}</small>
+                </span>
+                {!person.focus && person.page_id && person.page_id !== currentPageId ? <span className="material-symbols-outlined presence-go" aria-hidden="true">arrow_forward</span> : null}
+              </button>
+              {person.focus && !person.focus.paused && Number(person.focus.ends_at) - now > 120000 ? (
+                <button type="button" className="presence-join" onClick={() => { setOpen(false); joinFocus({ endsAt: Number(person.focus.ends_at), withName: person.name }); }} title={`Focus at the same time as ${person.name}`}>Join</button>
+              ) : null}
+            </div>
           ))}
         </div>
       ) : null}
