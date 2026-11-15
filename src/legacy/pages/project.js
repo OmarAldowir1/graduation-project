@@ -19,16 +19,27 @@ import { generateProjectReport } from '../../lib/projectReport.js';
 import { requestForm } from '../../lib/dialogs.js';
 import { loaderHtml } from '../../lib/loader.js';
 
+// Six main tabs. Team and Library each have two sections; their old addresses
+// (#project/<id>/checkins and /lessons) still work and open the right section.
 const TABS = [
   { id: 'overview', label: 'Overview', icon: 'space_dashboard', hint: 'What’s next, what’s late, and the progress report' },
   { id: 'plan', label: 'Plan & discussion', icon: 'forum', hint: 'The project plan page, with comments from the team' },
-  { id: 'teams', label: 'Teams', icon: 'groups', hint: 'Split the work into teams, each with a leader and progress' },
-  { id: 'checkins', label: 'Check-ins', icon: 'event_note', hint: 'Weekly: what everyone did, what’s next, what’s blocking them' },
-  { id: 'decisions', label: 'Decisions', icon: 'how_to_vote', hint: 'Quick polls and a log of what the team decided and why' },
   { id: 'tasks', label: 'Tasks', icon: 'view_kanban', hint: 'All tasks in this project as a board, list, calendar or timeline' },
-  { id: 'pages', label: 'Library', icon: 'local_library', hint: 'Pages, links and resources that belong to this project' },
-  { id: 'lessons', label: 'Lessons', icon: 'smart_display', hint: 'YouTube lectures turned into timestamped notes you can search and ask about' }
+  { id: 'teams', label: 'Team', icon: 'groups', hint: 'Teams with leaders, everyone’s workload, and weekly check-ins' },
+  { id: 'decisions', label: 'Decisions', icon: 'how_to_vote', hint: 'Quick polls and a log of what the team decided and why' },
+  { id: 'pages', label: 'Library', icon: 'local_library', hint: 'Pages, links, files and YouTube lessons for this project' }
 ];
+const SECTIONS = {
+  teams: [
+    { id: 'teams', label: 'Teams & workload', icon: 'groups', hint: 'Split the work into teams, each with a leader and progress' },
+    { id: 'checkins', label: 'Weekly check-ins', icon: 'event_note', hint: 'Weekly: what everyone did, what’s next, what’s blocking them' }
+  ],
+  pages: [
+    { id: 'pages', label: 'Pages & files', icon: 'description', hint: 'Pages, links, files and notes for this project' },
+    { id: 'lessons', label: 'YouTube lessons', icon: 'smart_display', hint: 'YouTube lectures turned into timestamped notes you can search and ask about' }
+  ]
+};
+const PARENT_TAB = { checkins: 'teams', lessons: 'pages' };
 
 function tabHref(projectId, tab) {
   if (tab === 'plan') return `#editor/${projectId}`;
@@ -45,7 +56,8 @@ function avatar(member, size = 28) {
 }
 
 // Shared header used by the project view and by pages inside a project.
-export function renderProjectBar({ project, activeTab, progress = null, members = [] }) {
+export function renderProjectBar({ project, activeTab, progress = null, members = [], showSections = true }) {
+  const mainTab = PARENT_TAB[activeTab] || activeTab;
   return `
     <div class="project-bar">
       <div class="project-bar-top">
@@ -60,12 +72,28 @@ export function renderProjectBar({ project, activeTab, progress = null, members 
         ${members.length ? `<div class="project-members">${members.slice(0, 5).map((member) => avatar(member, 26)).join('')}${members.length > 5 ? `<span class="project-more">+${members.length - 5}</span>` : ''}<a href="#settings?section=team" class="project-invite" title="Invite teammates"><span class="material-symbols-outlined">person_add</span></a></div>` : ''}
       </div>
       <nav class="project-tabs" aria-label="Project sections">
-        ${TABS.map((tab) => `<a href="${tabHref(project.id, tab.id)}" title="${tab.hint}" class="${tab.id === activeTab ? 'is-active' : ''}" ${tab.id === activeTab ? 'aria-current="page"' : ''}><span class="material-symbols-outlined">${tab.icon}</span>${tab.label}</a>`).join('')}
+        ${TABS.map((tab) => `<a href="${tabHref(project.id, tab.id)}" title="${tab.hint}" class="${tab.id === mainTab ? 'is-active' : ''}" ${tab.id === mainTab ? 'aria-current="page"' : ''}><span class="material-symbols-outlined">${tab.icon}</span>${tab.label}</a>`).join('')}
       </nav>
+      ${showSections && SECTIONS[mainTab] ? `<nav class="project-subtabs" aria-label="${mainTab === 'teams' ? 'Team' : 'Library'} sections">
+        ${SECTIONS[mainTab].map((section) => `<a href="${tabHref(project.id, section.id)}" title="${section.hint}" class="${section.id === activeTab ? 'is-active' : ''}" ${section.id === activeTab ? 'aria-current="page"' : ''}><span class="material-symbols-outlined">${section.icon}</span>${section.label}</a>`).join('')}
+      </nav>` : ''}
     </div>`;
 }
 
+// On narrow screens the tab bar scrolls sideways; keep the current tab in view.
+export function revealActiveTab(root) {
+  for (const bar of root?.querySelectorAll?.('.project-tabs, .project-subtabs') || []) {
+    const active = bar.querySelector('a.is-active');
+    if (active && bar.scrollWidth > bar.clientWidth) bar.scrollLeft = Math.max(0, active.offsetLeft - bar.offsetLeft - 16);
+  }
+}
+
 export async function renderProject(container, route) {
+  await renderProjectView(container, route);
+  revealActiveTab(container);
+}
+
+async function renderProjectView(container, route) {
   const projectId = route?.segments?.[0];
   const tab = ['tasks', 'pages', 'teams', 'checkins', 'decisions', 'lessons'].includes(route?.segments?.[1]) ? route.segments[1] : 'overview';
   const workspaceId = AppState.workspace?.id;
@@ -308,7 +336,7 @@ async function renderLessonsTab(container, { bar, project, workspaceId, role }) 
       : `<div class="project-hint"><span class="material-symbols-outlined">smart_display</span><div><strong>No lessons yet</strong><p>${canAddLessons ? 'Add a YouTube lecture or tutorial. The AI writes timestamped notes, a summary and chapters, and answers questions like “at what minute is this explained?”.' : 'When a team owner, admin or editor adds a YouTube lesson, it appears here with AI notes you can search and ask about.'}</p></div></div>`;
   container.innerHTML = `<div class="project-view">${bar}
     <section class="project-section">
-      <div class="project-section-head"><h2>Lessons</h2>${error || !canAddLessons ? '' : '<button type="button" class="project-btn primary" data-new-lesson><span class="material-symbols-outlined">add</span> Add YouTube lesson</button>'}</div>
+      <div class="project-section-head"><h2>YouTube lessons</h2>${error || !canAddLessons ? '' : '<button type="button" class="project-btn primary" data-new-lesson><span class="material-symbols-outlined">add</span> Add YouTube lesson</button>'}</div>
       ${body}
     </section></div>`;
 

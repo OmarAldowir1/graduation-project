@@ -37,7 +37,7 @@ export default function HelpPanel({ open, onClose, project, onNewProject }) {
   const projectHash = (tab = '') => (project ? `project/${project.id}${tab ? `/${tab}` : ''}` : null);
   const steps = [
     { n: 1, title: 'Plan', text: 'Create a project, or ask the AI to plan it for you.', actions: [{ label: 'New project', run: () => { onClose(); onNewProject(); } }, { label: 'Ask AI to plan', run: () => go('ai-chat') }] },
-    { n: 2, title: 'Split the work', text: 'Add teams with leaders, then tasks with owners and dates.', actions: project ? [{ label: 'Open Teams', run: () => go(projectHash('teams')) }] : [] },
+    { n: 2, title: 'Split the work', text: 'Add teams with leaders, then tasks with owners and dates.', actions: project ? [{ label: 'Open Team', run: () => go(projectHash('teams')) }] : [] },
     { n: 3, title: 'Do the work', text: 'Pick a task and use Focus: a timer with no distractions.', actions: [{ label: 'Start Focus', run: () => { onClose(); pickAndFocus(); } }] },
     { n: 4, title: 'Check in weekly', text: 'Share what you did, what’s next and what’s blocking you.', actions: project ? [{ label: 'Check in', run: () => go(projectHash('checkins')) }] : [] },
     { n: 5, title: 'Report progress', text: 'One click makes a report for your team or supervisor.', actions: project ? [{ label: 'Open Overview', run: () => go(projectHash()) }] : [] }

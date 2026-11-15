@@ -34,7 +34,7 @@ import { openShareDialog, openHistory, saveAsTemplate } from '../../lib/pageTool
 import { attachEditorMentions } from '../../lib/editorMentions.js';
 import { startLiveCollaboration } from '../../lib/liveCollab.js';
 import { supabase } from '../../lib/supabase.js';
-import { renderProjectBar } from './project.js';
+import { renderProjectBar, revealActiveTab } from './project.js';
 import { meetingNotesPrompt } from './projectTools.js';
 import { attachMentionPicker, extractMentionIds, renderMentionsHtml, memberLabel } from '../../lib/mentions.js';
 
@@ -129,7 +129,7 @@ export async function renderEditor(container, route) {
   container.innerHTML = `
     <div class="editor-layout flex-1 bg-surface overflow-y-auto relative">
       <div class="max-w-3xl mx-auto pt-12 pb-16 px-12">
-        ${owningProject ? renderProjectBar({ project: owningProject, activeTab: owningProject.id === page.id ? 'plan' : 'pages' }) : ''}
+        ${owningProject ? renderProjectBar({ project: owningProject, activeTab: owningProject.id === page.id ? 'plan' : 'pages', showSections: false }) : ''}
         ${safeCoverUrl
       ? `
           <div class="w-full h-48 mb-12 rounded-xl overflow-hidden group relative">
@@ -968,6 +968,7 @@ export async function renderEditor(container, route) {
     document.addEventListener('click', container.__pageMenuCloser);
   }
 
+  revealActiveTab(container);
   container.querySelector('#page-share-btn')?.addEventListener('click', () => openShareDialog(page));
   container.querySelector('#page-history-btn')?.addEventListener('click', () => openHistory(page, async () => renderEditor(container, route)));
   container.querySelector('#page-save-template')?.addEventListener('click', async () => {

@@ -1220,3 +1220,11 @@ html.dark .lesson-time-chip:hover, html.dark .lesson-time:hover, html.dark butto
 }
 .lesson-search input:focus { outline: none !important; box-shadow: none !important; }
 .lesson-answer ul, .lesson-answer ol { padding-left: 0; padding-inline-start: 20px; }
+
+/* Sections inside the Team and Library tabs */
+.project-subtabs { display: flex; gap: 6px; margin-top: 12px; overflow-x: auto; scrollbar-width: none; }
+.project-subtabs::-webkit-scrollbar { display: none; }
+.project-subtabs a { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--outline-variant); border-radius: 999px; background: var(--surface-container-lowest); color: var(--on-surface-variant); font: 500 13px var(--g-font); white-space: nowrap; text-decoration: none; }
+.project-subtabs a .material-symbols-outlined { font-size: 16px; }
+.project-subtabs a:hover { border-color: var(--primary); color: var(--on-surface); }
+.project-subtabs a.is-active { background: var(--primary-container); border-color: var(--primary); color: var(--on-primary-container); }

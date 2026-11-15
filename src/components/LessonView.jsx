@@ -279,7 +279,7 @@ function LessonRoom({ lessonId, user }) {
       <header className="meeting-header">
         <a className="meeting-back" href={`#project/${lesson.project_id}/lessons`}>
           <span className="material-symbols-outlined" aria-hidden="true">arrow_back</span>
-          {project?.title || 'Project'} · Lessons
+          {project?.title || 'Project'} · YouTube lessons
         </a>
         <div className="meeting-title-row">
           <h1>{lesson.title}</h1>

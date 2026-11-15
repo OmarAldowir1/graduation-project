@@ -1,5 +1,5 @@
 // ============================================
-// GROUPIFY — Project › Teams tab
+// GROUPIFY — Project › Team › Teams & workload
 // Teams with a leader, members, progress and their own tasks.
 // ============================================
 import { AppState, showToast } from '../app.js';

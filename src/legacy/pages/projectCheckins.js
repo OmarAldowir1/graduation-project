@@ -1,5 +1,5 @@
 // ============================================
-// GROUPIFY — Project › Check-ins tab
+// GROUPIFY — Project › Team › Weekly check-ins
 // Once a week: what I did, what's next, what's blocking me (+ mood).
 // ============================================
 import { AppState, showToast } from '../app.js';
