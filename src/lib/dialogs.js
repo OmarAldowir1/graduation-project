@@ -221,3 +221,9 @@ export function requestChoice({ title, placeholder = 'Search…', items = [], em
     }
   });
 }
+
+// A custom dialog using the same look and keyboard handling as the others.
+// html must have one root element; call finish(value) to close it.
+export function openCustomDialog({ label, html, onReady }) {
+  return openModal({ label, html, onReady });
+}

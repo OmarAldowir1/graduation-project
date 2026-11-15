@@ -8,6 +8,8 @@ import { markdownToHtml } from './markdown.js';
 import { escapeHtml } from './sanitize.js';
 import { averageProgress, taskProgress } from './teams.js';
 import { getCheckins, weekStart, shiftWeek, MOODS } from './checkins.js';
+import { deadlineHealth } from './teamToolsLogic.js';
+import { getMilestones, getDecisions } from './teamTools.js';
 
 const DAY = 86400000;
 
@@ -29,7 +31,7 @@ function bar(percent) {
 const isDone = (task) => task.status === 'done' || task.completed;
 
 // ---------- 1. Facts (pure calculation) ----------
-export function buildReportFacts({ project, tasks, teams = [], members = [], comments = [], checkins = [], days = 7, now = new Date() }) {
+export function buildReportFacts({ project, tasks, teams = [], members = [], comments = [], checkins = [], milestones = [], decisions = [], days = 7, now = new Date() }) {
   const since = new Date(now.getTime() - days * DAY);
   const today = dateKey(now);
   const soon = dateKey(new Date(now.getTime() + 7 * DAY));
@@ -111,7 +113,13 @@ export function buildReportFacts({ project, tasks, teams = [], members = [], com
     overdue: overdue.map(row),
     unassigned: unassigned.map(row),
     upcoming: upcoming.map(row),
-    contributions
+    contributions,
+    milestones: milestones.length ? {
+      health: deadlineHealth({ milestones, progress: averageProgress(tasks), projectStart: project.created_at, today }),
+      list: milestones.map((milestone) => ({ title: milestone.title, due: milestone.due_date, done: Boolean(milestone.done_at), late: !milestone.done_at && milestone.due_date < today }))
+    } : null,
+    decisions: decisions.filter((decision) => decision.created_at && new Date(decision.created_at) >= since)
+      .map((decision) => ({ title: decision.title, details: decision.details || '', by: decision.author?.name || nameOf(decision.created_by) }))
   };
 }
 
@@ -122,6 +130,7 @@ function factsAsText(facts) {
     `PROJECT: ${facts.project}`,
     `PERIOD: last ${facts.days} days (${facts.from} to ${facts.to})`,
     `OVERALL PROGRESS: ${facts.overall}% · ${facts.totals.done}/${facts.totals.tasks} tasks done · ${facts.totals.doneInPeriod} finished this period · ${facts.totals.createdInPeriod} new · ${facts.totals.overdue} overdue · ${facts.totals.unassigned} without an owner`,
+    ...(facts.milestones ? [`DEADLINE HEALTH: ${facts.milestones.health.label} (${facts.milestones.health.detail})`, 'MILESTONES:', list(facts.milestones.list, (m) => `- ${m.title}: ${m.due}${m.done ? ' (reached)' : m.late ? ' (LATE)' : ''}`)] : []),
     'TEAMS:', list(facts.teams, (t) => `- ${t.name} (leader ${t.leader}): ${t.percent}%, ${t.done}/${t.total} done, ${t.overdue} overdue`),
     'FINISHED THIS PERIOD:', list(facts.done, (t) => `- ${t.title} by ${t.owner}${t.team ? ` (${t.team})` : ''}`),
     'IN PROGRESS:', list(facts.inProgress, (t) => `- ${t.title}: ${t.progress}%, owner ${t.owner}${t.due ? `, due ${t.due}` : ''}`),
@@ -130,6 +139,7 @@ function factsAsText(facts) {
     'DUE IN THE NEXT 7 DAYS:', list(facts.upcoming, (t) => `- ${t.title}: due ${t.due}, owner ${t.owner}`),
     `CHECK-INS: ${facts.checkins.people} people checked in${facts.checkins.moods.length ? ` · mood ${facts.checkins.moods.map((m) => `${m.emoji}${m.count}`).join(' ')}` : ''}${facts.checkins.solved ? ` · ${facts.checkins.solved} blocker(s) already solved` : ''}`,
     'OPEN BLOCKERS REPORTED IN CHECK-INS (solved ones are not listed):', list(facts.checkins.blockers, (b) => `- ${b.name}: ${b.text}`),
+    'DECISIONS MADE THIS PERIOD:', list(facts.decisions || [], (d) => `- ${d.title}`),
     'CONTRIBUTIONS THIS PERIOD:', list(facts.contributions, (p) => `- ${p.name}: finished ${p.finished}, comments ${p.comments}, open tasks ${p.open}`)
   ].join('\n');
 }
@@ -137,7 +147,7 @@ function factsAsText(facts) {
 const SUMMARY_PROMPT = `Write the opening of a short progress report for a student project team and their supervisor, using ONLY the attached facts.
 Return Markdown with exactly two parts and nothing else:
 1. A heading "### Summary" followed by 2–3 sentences: overall status (on track / at risk / behind) and the most important change this period.
-2. A heading "### Recommended next steps" followed by 2–4 bullet points with concrete, practical actions (who should do what), focused on blockers reported in check-ins, overdue work, tasks without an owner, and slow teams.
+2. A heading "### Recommended next steps" followed by 2–4 bullet points with concrete, practical actions (who should do what), focused on late milestones, blockers reported in check-ins, overdue work, tasks without an owner, and slow teams.
 Do not repeat full task lists, do not invent people, tasks or numbers, and keep it under 150 words.`;
 
 export async function writeReportSummary(facts) {
@@ -161,6 +171,14 @@ export function renderReportHtml(facts, { summaryMarkdown = '', author = '' } = 
   parts.push(`<p><strong>Overall progress:</strong> ${e(bar(facts.overall))}</p>`);
   parts.push(`<ul><li><strong>${facts.totals.done}/${facts.totals.tasks}</strong> tasks done</li><li><strong>${facts.totals.doneInPeriod}</strong> finished in this period · <strong>${facts.totals.createdInPeriod}</strong> new</li><li><strong>${facts.totals.overdue}</strong> overdue · <strong>${facts.totals.unassigned}</strong> without an owner</li></ul>`);
 
+  if (facts.milestones) {
+    const { health, list } = facts.milestones;
+    const badge = { on_track: '🟢', at_risk: '🟠', behind: '🔴', done: '🏁', none: '' }[health.status] || '';
+    parts.push('<h2>🚩 Milestones</h2>');
+    parts.push(`<p><strong>${badge} ${e(health.label)}</strong> — ${e(health.detail)}</p>`);
+    parts.push(items(list, (m) => `${m.done ? '✅' : m.late ? '⚠️' : '⏳'} ${e(m.title)} — ${e(shortDate(m.due))}${m.late ? ' (late)' : ''}`, ''));
+  }
+
   if (facts.teams.length) {
     parts.push('<h2>👥 Teams</h2>');
     parts.push(items(facts.teams, (t) => `<strong>${e(t.name)}</strong> — ${e(bar(t.percent))} · ${t.done}/${t.total} done${t.overdue ? ` · ⚠️ ${t.overdue} overdue` : ''} · led by ${e(t.leader)}`, ''));
@@ -168,6 +186,11 @@ export function renderReportHtml(facts, { summaryMarkdown = '', author = '' } = 
 
   parts.push('<h2>✅ Finished this period</h2>');
   parts.push(items(facts.done, (t) => `${e(t.title)} — <strong>${e(t.owner)}</strong>${t.team ? ` (${e(t.team)})` : ''}${t.completedAt ? ` · ${e(shortDate(t.completedAt))}` : ''}`, 'Nothing was finished in this period.'));
+
+  if (facts.decisions?.length) {
+    parts.push('<h2>⚖️ Decisions made</h2>');
+    parts.push(items(facts.decisions, (d) => `<strong>${e(d.title)}</strong>${d.details ? ` — ${e(d.details)}` : ''} <em>(${e(d.by)})</em>`, ''));
+  }
 
   parts.push('<h2>🔄 In progress</h2>');
   parts.push(items(facts.inProgress.slice(0, 15), (t) => `${e(t.title)} — ${e(t.owner)} · ${t.progress}%${t.due ? ` · due ${e(shortDate(t.due))}` : ''}`, 'No tasks are marked in progress.'));
@@ -203,11 +226,13 @@ async function loadComments(taskIds, pageIds) {
 export async function generateProjectReport({ workspaceId, project, tasks, teams, members, pageIds = [], days = 7, author = '', useAI = true }) {
   const weeks = [weekStart()];
   for (let i = 1; i < Math.ceil(days / 7); i += 1) weeks.push(shiftWeek(weeks[0], -i));
-  const [comments, checkinsResult] = await Promise.all([
+  const [comments, checkinsResult, milestonesResult, decisionsResult] = await Promise.all([
     loadComments(tasks.map((task) => task.id), pageIds),
-    getCheckins({ projectId: project.id, weeks })
+    getCheckins({ projectId: project.id, weeks }),
+    getMilestones(project.id),
+    getDecisions(project.id)
   ]);
-  const facts = buildReportFacts({ project, tasks, teams, members, comments, checkins: checkinsResult.data || [], days });
+  const facts = buildReportFacts({ project, tasks, teams, members, comments, checkins: checkinsResult.data || [], milestones: milestonesResult.data || [], decisions: decisionsResult.data || [], days });
   let summaryMarkdown = '';
   let aiError = '';
   if (useAI) {

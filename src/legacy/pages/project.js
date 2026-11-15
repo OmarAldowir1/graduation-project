@@ -1,5 +1,5 @@
 // ============================================
-// MOTION — Project view (Overview · Plan & discussion · Tasks · Pages)
+// MOTION — Project view (Overview · Plan · Teams · Check-ins · Decisions · Tasks · Library)
 // ============================================
 import { AppState, setBreadcrumb, showToast } from '../app.js';
 import { getPages, getTasks, getWorkspaceMembers, createTask, toggleTask, timeAgo } from '../../lib/queries.js';
@@ -12,7 +12,8 @@ import { renderKanban } from './kanban.js';
 import { renderTeamsTab } from './projectTeams.js';
 import { renderCheckinsTab } from './projectCheckins.js';
 import { getCheckins, weekStart, expectedPeople, blockersOf } from '../../lib/checkins.js';
-import { getProjectTeams, teamStats, TEAM_COLORS } from '../../lib/teams.js';
+import { getProjectTeams, teamStats, TEAM_COLORS, workspaceRole } from '../../lib/teams.js';
+import { renderMilestonesCard, openMeetingAssistant, renderDecisionsTab, renderResources, renderWorkload } from './projectTools.js';
 import { generateProjectReport } from '../../lib/projectReport.js';
 import { requestForm } from '../../lib/dialogs.js';
 import { loaderHtml } from '../../lib/loader.js';
@@ -22,8 +23,9 @@ const TABS = [
   { id: 'plan', label: 'Plan & discussion', icon: 'forum', hint: 'The project plan page, with comments from the team' },
   { id: 'teams', label: 'Teams', icon: 'groups', hint: 'Split the work into teams, each with a leader and progress' },
   { id: 'checkins', label: 'Check-ins', icon: 'event_note', hint: 'Weekly: what everyone did, what’s next, what’s blocking them' },
+  { id: 'decisions', label: 'Decisions', icon: 'how_to_vote', hint: 'Quick polls and a log of what the team decided and why' },
   { id: 'tasks', label: 'Tasks', icon: 'view_kanban', hint: 'All tasks in this project as a board, list, calendar or timeline' },
-  { id: 'pages', label: 'Pages', icon: 'description', hint: 'Notes, research and drafts that belong to this project' }
+  { id: 'pages', label: 'Library', icon: 'local_library', hint: 'Pages, links and resources that belong to this project' }
 ];
 
 function tabHref(projectId, tab) {
@@ -63,7 +65,7 @@ export function renderProjectBar({ project, activeTab, progress = null, members 
 
 export async function renderProject(container, route) {
   const projectId = route?.segments?.[0];
-  const tab = ['tasks', 'pages', 'teams', 'checkins'].includes(route?.segments?.[1]) ? route.segments[1] : 'overview';
+  const tab = ['tasks', 'pages', 'teams', 'checkins', 'decisions'].includes(route?.segments?.[1]) ? route.segments[1] : 'overview';
   const workspaceId = AppState.workspace?.id;
 
   const [pagesResult, tasksResult, membersResult, teamsResult] = await Promise.all([
@@ -86,9 +88,12 @@ export async function renderProject(container, route) {
   const tasks = tasksForProject(tasksResult.data || [], pages, project.id);
   const progress = projectProgress(tasks);
   const bar = renderProjectBar({ project, activeTab: tab, progress, members });
+  const role = workspaceRole(members, AppState.user?.id, AppState.workspace);
 
   if (tab === 'teams') {
-    container.innerHTML = `<div class="project-view">${bar}<section class="project-section project-teams"></section></div>`;
+    container.innerHTML = `<div class="project-view">${bar}<section class="project-section project-workload"></section><section class="project-section project-teams"></section></div>`;
+    renderWorkload(container.querySelector('.project-workload'), { project, tasks, members, teams });
+    if (!container.querySelector('.project-workload').innerHTML) container.querySelector('.project-workload').remove();
     renderTeamsTab(container.querySelector('.project-teams'), {
       project, teams, tasks, members, workspaceId,
       unavailable: Boolean(teamsResult.unavailable),
@@ -100,6 +105,12 @@ export async function renderProject(container, route) {
   if (tab === 'checkins') {
     container.innerHTML = `<div class="project-view">${bar}<section class="project-section project-checkins"></section></div>`;
     await renderCheckinsTab(container.querySelector('.project-checkins'), { project, tasks, teams, members, workspaceId });
+    return;
+  }
+
+  if (tab === 'decisions') {
+    container.innerHTML = `<div class="project-view">${bar}<section class="project-section project-decisions"></section></div>`;
+    await renderDecisionsTab(container.querySelector('.project-decisions'), { project, members, role, workspaceId });
     return;
   }
 
@@ -127,8 +138,10 @@ export async function renderProject(container, route) {
       <section class="project-section">
         <div class="project-section-head"><h2>Pages in this project</h2><button type="button" class="project-btn primary" data-new-page><span class="material-symbols-outlined">note_add</span> New page</button></div>
         ${projectPages.length ? `<ul class="project-page-tree">${renderTree(project.id, 0)}</ul>` : `<div class="project-hint"><span class="material-symbols-outlined">description</span><div><strong>No pages yet</strong><p>Add pages for meeting notes, research or drafts. The project plan lives in “Plan &amp; discussion”.</p></div></div>`}
-      </section></div>`;
+      </section>
+      <section class="project-section project-resources"></section></div>`;
     container.querySelector('[data-new-page]')?.addEventListener('click', () => startNewPageIn(project.id));
+    await renderResources(container.querySelector('.project-resources'), { project, role, workspaceId });
     return;
   }
 
@@ -170,6 +183,7 @@ export async function renderProject(container, route) {
   container.innerHTML = `<div class="project-view">${bar}
     <div class="project-report-row">
       <button type="button" class="project-btn primary" data-report><span class="material-symbols-outlined">monitoring</span> Progress report</button>
+      <button type="button" class="project-btn" data-meeting title="An agenda built from blockers, deadlines and open polls"><span class="material-symbols-outlined">groups_3</span> Plan a meeting</button>
       ${reports[0] ? `<a class="project-link" href="#editor/${escapeHtml(reports[0].id)}">Last report: ${escapeHtml(timeAgo(reports[0].created_at || reports[0].updated_at))} →</a>` : '<span class="project-report-hint">One click: a summary of progress, teams, overdue work and who did what, for your team or supervisor.</span>'}
       ${checkinNote}
     </div>
@@ -187,6 +201,7 @@ export async function renderProject(container, route) {
         ${openTasks.length ? `<ul class="project-task-list">${openTasks.slice(0, 8).map(taskRow).join('')}</ul>` : `<div class="project-hint"><span class="material-symbols-outlined">task_alt</span><div><strong>${tasks.length ? 'All tasks are done 🎉' : 'No tasks yet'}</strong><p>${tasks.length ? 'Add the next piece of work, or celebrate.' : 'Break the plan into tasks and give each one an owner.'}</p></div></div>`}
       </section>
       <div class="project-side">
+        <section class="project-section project-milestones"><div class="project-section-head"><h2>Milestones</h2></div></section>
         <section class="project-section">
           <div class="project-section-head"><h2>Latest discussion</h2><a class="project-link" href="${tabHref(project.id, 'plan')}">Open →</a></div>
           ${comments?.length ? `<ul class="project-feed">${comments.map((comment) => `<li><a href="#editor/${escapeHtml(comment.page_id)}"><strong>${escapeHtml(comment.author?.name || 'Teammate')}</strong> on ${escapeHtml(pageTitle(comment.page_id))}<p>${escapeHtml(String(comment.content || '').replace(/^\[RESOLVED\] /, '').slice(0, 120))}</p><small>${escapeHtml(timeAgo(comment.created_at))}</small></a></li>`).join('')}</ul>` : `<div class="project-hint"><span class="material-symbols-outlined">forum</span><div><strong>No discussion yet</strong><p>Open the plan and leave a comment. @mention a teammate to bring them in.</p></div></div>`}
@@ -202,6 +217,18 @@ export async function renderProject(container, route) {
     </div></div>`;
 
   const refresh = () => renderProject(container, route);
+  renderMilestonesCard(container.querySelector('.project-milestones'), { project, progress: progress.percent, role, workspaceId, refresh });
+  container.querySelector('[data-meeting]')?.addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      await openMeetingAssistant({ project, tasks, members, workspaceId, weekCheckins });
+    } catch (error) {
+      showToast(`Could not build the agenda: ${error.message}`, 'error');
+    } finally {
+      button.disabled = false;
+    }
+  });
   container.querySelector('[data-report]')?.addEventListener('click', async (event) => {
     const button = event.currentTarget;
     const values = await requestForm({

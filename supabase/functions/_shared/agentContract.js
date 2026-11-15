@@ -102,6 +102,8 @@ Actions (include only the fields you need):
 - {"type":"create_task","title":"...","project":"P1 or NEW1","team":"M1 or NEW3","owner":"U1","due":"YYYY-MM-DD","priority":"low|medium|high|urgent","status":"todo|in_progress|done","progress":0,"description":"...","steps":["first step","second step"]}
 - {"type":"update_task","task":"T1","title":"...","status":"...","priority":"...","owner":"U1 or none","due":"YYYY-MM-DD or none","progress":0-100,"team":"M1 or none"}
 - {"type":"comment","page":"G1","text":"...","mention":["U2"]}   (use "task":"T1" instead of "page" to comment on a task)
+- {"type":"create_milestone","project":"P1 or NEW1","title":"Prototype demo","due":"YYYY-MM-DD"}
+- {"type":"create_decision","project":"P1 or NEW1","title":"what the team decided","details":"why, in one sentence"}
 - {"type":"open","target":"P1|G1|T1|home|my-tasks|all-tasks|team-chat|settings|team"}
 
 Rules:
@@ -121,7 +123,8 @@ Rules:
 9. "template" only chooses the starting layout of a new project's plan page. If you also create tasks for that project, the template's generic starter tasks are skipped.
 10. TEAMS: when the user wants a plan split into teams, create the project first (unless it exists), then one create_team per team (with a leader and members from MEMBERS), then each team's tasks with "team" set, an owner from that team, a due date and progress 0. Keep task descriptions to one or two sentences. A team's leader manages its tasks; other members can only update progress on their own tasks. Never propose edits to tasks of a team marked "THE USER CANNOT EDIT THIS TEAM'S TASKS" — suggest commenting or asking the leader instead.
 11. Progress is a percentage (0-100). Setting status "done" means 100.
-12. Reply in the user's language. Be concise and practical. If you cannot do something with the actions above, say so and suggest how the user can do it.`;
+12. MILESTONES are the project's key dates (e.g. Proposal, Prototype demo, Final presentation). When you plan a new project with phases, also add 2-4 create_milestone actions for the phase deadlines. DECISIONS: when the user or meeting notes say the team decided or agreed on something, record each one with create_decision (title = the decision, details = why).
+13. Reply in the user's language. Be concise and practical. If you cannot do something with the actions above, say so and suggest how the user can do it.`;
 
 // ---------- output validation ----------
 
@@ -142,7 +145,7 @@ export function parseModelJson(output) {
 // The free model sometimes garbles its JSON keys (e.g. "actions':[{") so actions end up
 // outside the "actions" list. Collect every action-shaped object anywhere in the answer,
 // in order. Each one is still fully validated below.
-const ACTION_TYPES = new Set(['create_project', 'create_team', 'update_team', 'create_page', 'append_to_page', 'create_task', 'update_task', 'comment', 'open']);
+const ACTION_TYPES = new Set(['create_project', 'create_team', 'update_team', 'create_page', 'append_to_page', 'create_task', 'update_task', 'comment', 'create_milestone', 'create_decision', 'open']);
 export function collectActions(plan) {
   const found = [];
   const seen = new Set();
@@ -168,6 +171,15 @@ export function validateAgentOutput(output, snapshot) {
   const refs = new Set([...snapshot.members, ...snapshot.projects, ...(snapshot.teams || []), ...snapshot.pages, ...snapshot.tasks].map((item) => item.ref));
   const created = new Set();
   const known = (value, prefix) => (isRef(value, prefix) && refs.has(value)) || (isNewRef(value) && created.has(value));
+  // Milestones and decisions belong to a project; accept the project's page (e.g. the meeting notes) too.
+  const projectFor = (raw) => {
+    if (raw.project && known(raw.project, 'P')) return raw.project;
+    if (raw.project) return null;
+    if (!isRef(raw.page, 'G') || !refs.has(raw.page)) return null;
+    return snapshot.pages.find((page) => page.ref === raw.page)?.project
+      || snapshot.projects.find((project) => project.plan === raw.page)?.ref
+      || null;
+  };
   const actions = [];
   const dropped = [];
   const rawActions = Array.isArray(plan.actions) ? plan.actions.slice(0, AGENT_LIMITS.actions) : [];
@@ -280,6 +292,24 @@ export function validateAgentOutput(output, snapshot) {
         if (!onPage && !onTask) { fail('unknown page or task'); break; }
         const mention = (Array.isArray(raw.mention) ? raw.mention : []).filter((ref) => known(ref, 'U')).slice(0, 10);
         actions.push({ type: 'comment', ...(onPage ? { page: raw.page } : { task: raw.task }), text, mention });
+        break;
+      }
+      case 'create_milestone': {
+        const title = clip(raw.title, 120);
+        if (!title) { fail('missing title'); break; }
+        const project = projectFor(raw);
+        if (!project) { fail('unknown project'); break; }
+        if (!isDate(raw.due)) { fail('missing date'); break; }
+        actions.push({ type: 'create_milestone', project, title, due: raw.due });
+        break;
+      }
+      case 'create_decision': {
+        const title = clip(raw.title, 200);
+        if (!title) { fail('missing title'); break; }
+        const project = projectFor(raw);
+        if (!project) { fail('unknown project'); break; }
+        const details = typeof raw.details === 'string' ? raw.details.trim().slice(0, 2000) : '';
+        actions.push({ type: 'create_decision', project, title, ...(details ? { details } : {}) });
         break;
       }
       case 'open': {

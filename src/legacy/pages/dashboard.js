@@ -11,10 +11,54 @@ import { describeNotification } from '../../lib/notificationText.js';
 import { pickAndFocus } from '../../lib/focusZone.js';
 import { getMyCheckinsForWeek } from '../../lib/checkins.js';
 import { getWorkspaceTeams } from '../../lib/teams.js';
+import { getWorkspaceUpdates, catchUpItems } from '../../lib/teamTools.js';
 
 function checklistKey() {
   return `motion-onboarding-dismissed-${AppState.workspace?.id || 'none'}`;
 }
+// "Catch me up" remembers when you last read it (per person and team).
+function caughtUpKey(userId, workspaceId) {
+  return `groupify.lastCaughtUp.${userId}.${workspaceId}`;
+}
+
+function readCaughtUp(userId, workspaceId) {
+  try {
+    const value = localStorage.getItem(caughtUpKey(userId, workspaceId));
+    if (value && !Number.isNaN(Date.parse(value))) return value;
+  } catch { /* storage blocked */ }
+  return new Date(Date.now() - 7 * 86400000).toISOString();
+}
+
+async function renderCatchUp(section, { workspaceId, me, tasks, projectById, projectIndex }) {
+  if (!section || !workspaceId || !me) return;
+  const since = readCaughtUp(me, workspaceId);
+  const updates = await getWorkspaceUpdates(workspaceId, since);
+  if (!section.isConnected) return;
+  const groups = catchUpItems({
+    tasks, updates, me, since,
+    projectTitle: (id) => projectById.get(id)?.title || '',
+    projectOf: (task) => projectIndex.get(task.page_id) || null
+  });
+  if (!groups.length) { section.hidden = true; return; }
+  const sinceLabel = new Date(since).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+  section.innerHTML = `
+    <div class="home-catchup-head">
+      <h2><span class="material-symbols-outlined" aria-hidden="true">history</span>Catch me up <small>since ${escapeHtml(sinceLabel)}</small></h2>
+      <button type="button" class="project-btn" data-caught-up><span class="material-symbols-outlined">done_all</span> Got it</button>
+    </div>
+    <div class="home-catchup-grid">${groups.map((group) => `<div class="home-catchup-group ${group.tone ? `is-${group.tone}` : ''}">
+      <h3><span class="material-symbols-outlined" aria-hidden="true">${group.icon}</span>${escapeHtml(group.title)} <b>${group.items.length}</b></h3>
+      <ul>${group.items.slice(0, 4).map((item) => `<li><a href="${escapeHtml(item.href)}">${escapeHtml(item.text)}</a></li>`).join('')}</ul>
+      ${group.items.length > 4 ? `<small>+${group.items.length - 4} more</small>` : ''}
+    </div>`).join('')}</div>`;
+  section.hidden = false;
+  section.querySelector('[data-caught-up]').addEventListener('click', () => {
+    try { localStorage.setItem(caughtUpKey(me, workspaceId), new Date().toISOString()); } catch { /* storage blocked */ }
+    section.hidden = true;
+    showToast('You’re all caught up ✓', 'success');
+  });
+}
+
 function readDismissed() {
   try { return localStorage.getItem(checklistKey()) === '1'; } catch { return false; }
 }
@@ -146,6 +190,8 @@ export async function renderDashboard(container) {
         <ul>${attentionRows.join('')}</ul>
       </section>` : ''}
 
+      <section class="home-catchup" aria-label="Catch me up" hidden></section>
+
       ${projects.length ? `<section class="home-digest" aria-label="This week">
         <h2>This week in ${teamName}</h2>
         <div class="home-digest-grid">
@@ -202,6 +248,7 @@ export async function renderDashboard(container) {
     </div>`;
 
   const refresh = () => renderDashboard(container);
+  renderCatchUp(container.querySelector('.home-catchup'), { workspaceId, me, tasks, projectById, projectIndex }).catch(() => {});
   container.querySelectorAll('[data-new-project]').forEach((button) => button.addEventListener('click', () => startNewProject()));
   container.querySelectorAll('[data-template]').forEach((button) => button.addEventListener('click', () => startNewProject({ template: button.dataset.template })));
   container.querySelectorAll('[data-step-action="new-project"]').forEach((button) => button.addEventListener('click', () => startNewProject()));

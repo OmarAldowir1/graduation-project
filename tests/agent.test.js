@@ -175,3 +175,21 @@ test('reads steps written as one "a; b; c" string', () => {
   const out = validateAgentOutput({ reply: 'ok', actions: [{ type: 'create_task', title: 'Plan features', owner: 'U1', steps: 'Brainstorm features; Prioritize; Write the list' }] }, snapshot);
   assert.deepEqual(out.actions[0].steps, ['Brainstorm features', 'Prioritize', 'Write the list']);
 });
+
+test('records milestones and decisions in a project (or from its meeting page)', () => {
+  const out = validateAgentOutput({ reply: 'ok', actions: [
+    { type: 'create_milestone', project: 'P1', title: 'Prototype demo', due: '2026-12-01' },
+    { type: 'create_decision', page: 'G1', title: 'Use email login first', details: 'Faster to build.' },
+    { type: 'create_project', ref: 'NEW1', title: 'Thesis' },
+    { type: 'create_milestone', project: 'NEW1', title: 'Final presentation', due: '2027-01-10' },
+    { type: 'create_milestone', project: 'P1', title: 'No date' },
+    { type: 'create_milestone', project: 'P9', title: 'Ghost', due: '2026-12-01' },
+    { type: 'create_decision', page: 'G2', title: 'Page outside any project' },
+    { type: 'create_decision', project: 'P1', title: '  ' }
+  ] }, snapshot);
+  assert.deepEqual(out.actions.map((a) => a.type), ['create_milestone', 'create_decision', 'create_project', 'create_milestone']);
+  assert.equal(out.actions[1].project, 'P1');
+  assert.equal(out.actions[1].details, 'Faster to build.');
+  assert.equal(out.actions[3].project, 'NEW1');
+  assert.deepEqual(out.dropped, ['create_milestone: missing date', 'create_milestone: unknown project', 'create_decision: unknown project', 'create_decision: missing title']);
+});

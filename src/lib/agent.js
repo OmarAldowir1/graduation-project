@@ -8,6 +8,7 @@ import { getPages, getTasks, getWorkspaceMembers, createPage, createTask, update
 import { buildProjectIndex, listProjects, projectProgress, tasksForProject, PROJECT_TEMPLATES, PROJECT_TYPE } from './projects.js';
 import { markdownToHtml } from './markdown.js';
 import { getWorkspaceTeams, createTeam, updateTeam, canManageTeam, workspaceRole, averageProgress } from './teams.js';
+import { createMilestone, createDecision } from './teamTools.js';
 
 function todayKey() {
   const now = new Date();
@@ -194,6 +195,10 @@ export function describeAction(action, refs, createdTitles = new Map()) {
     }
     case 'comment':
       return { icon: 'comment', text: `Comment on “${name(action.page || action.task)}”`, detail: action.text.slice(0, 90) + (action.text.length > 90 ? '…' : '') };
+    case 'create_milestone':
+      return { icon: 'flag', text: `Add milestone “${action.title}”`, detail: `${action.due} · ${name(action.project)}` };
+    case 'create_decision':
+      return { icon: 'gavel', text: `Record decision “${action.title}”`, detail: action.details ? action.details.slice(0, 90) + (action.details.length > 90 ? '…' : '') : `in ${name(action.project)}` };
     case 'open':
       return { icon: 'open_in_new', text: `Open ${['home', 'my-tasks', 'all-tasks', 'team-chat', 'settings', 'team'].includes(action.target) ? action.target.replace('-', ' ') : `“${name(action.target)}”`}`, detail: '' };
     default:
@@ -328,6 +333,15 @@ export async function executeAgentActions(actions, context) {
           if (error) throw error;
           results.push({ ok: true, text: info.text, href: `#kanban?task=${encodeURIComponent(taskId)}` });
         }
+      } else if (action.type === 'create_milestone' || action.type === 'create_decision') {
+        const projectId = idOf(action.project, 'P');
+        if (!projectId) throw new Error('The project was not found.');
+        const { error } = action.type === 'create_milestone'
+          ? await createMilestone({ workspaceId, projectId, title: action.title, dueDate: action.due })
+          : await createDecision({ workspaceId, projectId, title: action.title, details: action.details || '' });
+        if (error) throw error;
+        const tab = action.type === 'create_milestone' ? '' : '/decisions';
+        results.push({ ok: true, text: info.text, href: `#project/${projectId}${tab}` });
       } else if (action.type === 'open') {
         const fixed = { home: 'dashboard', 'my-tasks': 'kanban?assignee=mine', 'all-tasks': 'kanban', 'team-chat': 'chat', settings: 'settings', team: 'settings?section=team' };
         const target = action.target;

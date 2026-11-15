@@ -35,6 +35,7 @@ import { attachEditorMentions } from '../../lib/editorMentions.js';
 import { startLiveCollaboration } from '../../lib/liveCollab.js';
 import { supabase } from '../../lib/supabase.js';
 import { renderProjectBar } from './project.js';
+import { meetingNotesPrompt } from './projectTools.js';
 import { attachMentionPicker, extractMentionIds, renderMentionsHtml, memberLabel } from '../../lib/mentions.js';
 
 function cleanBlockContent(html) {
@@ -170,6 +171,7 @@ export async function renderEditor(container, route) {
               <div class="page-menu" role="menu" hidden data-menu="ai">
                 <button type="button" role="menuitem" data-page-ai="summarize"><span class="material-symbols-outlined">summarize</span>Summarize this page</button>
                 <button type="button" role="menuitem" data-page-ai="tasks"><span class="material-symbols-outlined">add_task</span>Turn this page into tasks</button>
+                <button type="button" role="menuitem" data-page-ai="meeting"><span class="material-symbols-outlined">groups_3</span>Meeting notes → decisions &amp; tasks</button>
                 <button type="button" role="menuitem" data-page-ai="status"><span class="material-symbols-outlined">campaign</span>Write a status update</button>
                 <button type="button" role="menuitem" data-page-ai="improve"><span class="material-symbols-outlined">edit_note</span>Suggest improvements</button>
                 <button type="button" role="menuitem" data-page-ai="ask"><span class="material-symbols-outlined">chat</span>Ask a question about it…</button>
@@ -992,6 +994,7 @@ export async function renderEditor(container, route) {
       summarize: `Summarize the page “${title}” in a few bullet points: key points, decisions, and open questions.`,
       tasks: `Read the page “${title}” and turn its action items into tasks${owningProject ? ` in the project “${owningProject.title}”` : ''}. Use owners and due dates mentioned in the text when they match team members; otherwise leave them empty. Propose the tasks.`,
       status: `Write a short status update about “${title}” (what is done, what is next, any blockers) and propose posting it as a comment on that page.`,
+      meeting: meetingNotesPrompt(title, owningProject?.title),
       improve: `Suggest concrete improvements to the page “${title}”: missing sections, unclear parts, and better structure. If useful, propose adding the missing sections to the page.`
     };
     let prompt = prompts[button.dataset.pageAi];
