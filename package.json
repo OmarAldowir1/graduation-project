@@ -12,6 +12,8 @@
     "test": "node --test tests/*.test.js",
     "test:ai": "node --test tests/ai-blocks.test.js tests/page-ai-handler.test.js tests/text-ai-handler.test.js tests/agent.test.js",
     "test:collab": "node --test tests/collaboration.test.js tests/projects.test.js tests/team-tools.test.js",
+    "e2e": "playwright test",
+    "e2e:login": "node e2e/save-login.js",
     "preview": "vite preview",
     "check": "npm run lint && npm run build"
   },
@@ -29,6 +31,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.56.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.1",

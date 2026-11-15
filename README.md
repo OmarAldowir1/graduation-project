@@ -86,7 +86,18 @@ npm run lint      # lint the source
 npm run build     # production build
 npm run check     # lint and production build together
 npm run preview   # preview the production build
+npm test          # all unit tests (logic, AI contract, permissions helpers)
+npm run e2e       # click-through tests in a real Chrome
 ```
+
+### Click-through tests
+
+`npm run e2e` drives the app in Chrome (Playwright) against the dev server on port 5173, starting it if needed.
+
+- **Signed-out** (always run): homepage, sign-in, private links redirect to sign-in (also after signing out), invite links are kept, broken share links.
+- **Signed-in** (runs once you've saved a login): creates a throwaway project, adds and finishes a task, sets a milestone and checks the deadline health, uploads a file to the Library and deletes it. The test project is always deleted at the end.
+
+To turn on the signed-in tests, run `npm run e2e:login` once and sign in yourself in the window that opens (a test account is best). Only the session is saved, to `e2e/.auth/user.json`, which is git-ignored and expires; run it again when it does. First time on a new computer: `npx playwright install chromium`.
 
 ## Included features
 

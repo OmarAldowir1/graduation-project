@@ -1007,6 +1007,12 @@ export default function App() {
   useEffect(() => {
     const onHashChange = () => {
       const nextRoute = parseHash();
+      // Signed out (e.g. Back after signing out): private pages go to sign-in, same as on start-up.
+      if (!AppState.isLoading && !AppState.user && !['login', 'reset-password', 'share', 'welcome'].includes(nextRoute.path)) {
+        if (nextRoute.path === 'invite' && nextRoute.segments[0]) localStorage.setItem('motion-pending-invite', nextRoute.segments[0]);
+        window.location.hash = ['dashboard', ''].includes(nextRoute.path) && !nextRoute.segments.length ? 'welcome' : 'login';
+        return;
+      }
       setRoute(nextRoute);
       setSidebarOpen(false); // Close sidebar on navigation (mobile)
       if (nextRoute.path === 'ai-chat') {
