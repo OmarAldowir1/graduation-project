@@ -90,7 +90,7 @@ Open a project's **Lessons** tab, click **Add YouTube lesson** and paste the lin
 Lessons use Google Gemini, because it can read a public YouTube link directly; the rest of the AI stays on Cloudflare. Setup:
 
 1. Run [`sql/lessons.sql`](sql/lessons.sql) in the Supabase SQL Editor.
-2. Create a Gemini API key at [aistudio.google.com](https://aistudio.google.com) and add `GEMINI_API_KEY=…` to the ignored `supabase/functions/.env` file (local development), then restart the dev server. The key never reaches the browser.
+2. Create a Gemini API key at [aistudio.google.com](https://aistudio.google.com) (**Create API key**), then run `npm run setup:gemini` and paste it. The helper checks the key with Google, then saves it to the ignored `supabase/functions/.env` file; restart the dev server afterwards. The key never reaches the browser or git.
 3. For a hosted deployment, set the same secret and deploy the function: `npx supabase secrets set GEMINI_API_KEY=… --project-ref YOUR_PROJECT_REF`, then `npx supabase functions deploy lesson-ai --project-ref YOUR_PROJECT_REF`.
 
 Limits: public videos only (not private, unlisted or age-restricted), up to 4 hours per video, and Google's free tier allows about 8 hours of YouTube video per day for the whole project. YouTube support in the Gemini API is a preview feature, so its limits may change.

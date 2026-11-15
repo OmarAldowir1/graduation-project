@@ -20,7 +20,7 @@ export default defineConfig([
   },
   {
     // These run in Node (the Vite config, the local AI middleware and the tests), not the browser.
-    files: ['vite.config.js', 'playwright.config.js', 'server/**/*.js', 'tests/**/*.js', 'e2e/**/*.js'],
+    files: ['vite.config.js', 'playwright.config.js', 'server/**/*.js', 'tests/**/*.js', 'e2e/**/*.js', 'scripts/**/*.js'],
     languageOptions: {
       globals: { ...globals.node },
     },

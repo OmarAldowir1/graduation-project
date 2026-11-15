@@ -13,6 +13,7 @@
     "test:ai": "node --test tests/ai-blocks.test.js tests/page-ai-handler.test.js tests/text-ai-handler.test.js tests/agent.test.js",
     "test:lessons": "node --test tests/lesson-ai.test.js",
     "test:collab": "node --test tests/collaboration.test.js tests/projects.test.js tests/team-tools.test.js",
+    "setup:gemini": "node scripts/set-gemini-key.js",
     "e2e": "playwright test",
     "e2e:login": "node e2e/save-login.js",
     "preview": "vite preview",
