@@ -57,6 +57,14 @@ import { renderProfile } from './legacy/pages/profile.js';
 import { renderProject } from './legacy/pages/project.js';
 
 const PRESENCE_COLORS = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#8b5cf6', '#14b8a6'];
+// The signed-in person and current team, copied into React state so that live features
+// (presence, notifications, realtime refresh) reconnect whenever either one changes.
+// AppState is a plain object React can't watch, so reading it during render is not enough.
+function readLiveIds(previous) {
+  const next = { userId: AppState.user?.id || null, workspaceId: AppState.workspace?.id || null };
+  return previous && previous.userId === next.userId && previous.workspaceId === next.workspaceId ? previous : next;
+}
+
 function presenceColor(id = '') {
   let hash = 0;
   for (const char of String(id)) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
@@ -625,6 +633,7 @@ export default function App() {
   const [notifications, setNotifications] = useState([]);
   const [onlineMembers, setOnlineMembers] = useState([]);
   const onlineMemberCount = onlineMembers.length;
+  const [liveIds, setLiveIds] = useState(() => readLiveIds(null));
   const [isOffline, setIsOffline] = useState(() => typeof navigator !== 'undefined' && !navigator.onLine);
   const [newPageModalOpen, setNewPageModalOpen] = useState(false);
   const [newWorkspaceModalOpen, setNewWorkspaceModalOpen] = useState(false);
@@ -752,6 +761,7 @@ export default function App() {
     if (!workspace) return;
     AppState.workspace = workspace;
     localStorage.setItem('motion-workspace-id', workspace.id);
+    setLiveIds(readLiveIds);
     forceUpdate((value) => value + 1);
     window.location.assign('#dashboard');
   }, []);
@@ -833,8 +843,8 @@ export default function App() {
     });
   }, []);
 
-  const currentUserId = AppState.user?.id || null;
-  const currentWorkspaceId = AppState.workspace?.id || null;
+  const currentUserId = liveIds.userId;
+  const currentWorkspaceId = liveIds.workspaceId;
   useEffect(() => {
     if (!currentUserId) return undefined;
     const channel = supabase
@@ -1078,6 +1088,7 @@ export default function App() {
           AppState.workspaces = [];
           AppState.workspace = null;
           AppState.isLoading = false;
+          setLiveIds(readLiveIds);
           {
             // Signed-out visitors to the main address see the homepage; deep links go to sign-in.
             const signedOutPath = parseHash().path;
@@ -1098,6 +1109,7 @@ export default function App() {
           AppState.workspaces = [];
           AppState.workspace = null;
           AppState.isLoading = false;
+          setLiveIds(readLiveIds);
           {
             // Signed-out visitors to the main address see the homepage; deep links go to sign-in.
             const signedOutPath = parseHash().path;
@@ -1136,6 +1148,7 @@ export default function App() {
         AppState.workspace = workspaces?.find((workspace) => workspace.id === savedWorkspaceId) || workspaces?.[0] || null;
         if (AppState.workspace?.id) localStorage.setItem('motion-workspace-id', AppState.workspace.id);
         AppState.isLoading = false;
+        setLiveIds(readLiveIds);
 
         // Apply saved theme preference from DB
         if (settings?.theme && (settings.theme === 'dark' || settings.theme === 'light')) {
@@ -1173,6 +1186,7 @@ export default function App() {
         AppState.profile = null;
         AppState.workspaces = [];
         AppState.workspace = null;
+        setLiveIds(readLiveIds);
         window.location.hash = 'login';
       }
       // Supabase re-emits SIGNED_IN whenever the tab becomes visible again, and
@@ -1230,6 +1244,7 @@ export default function App() {
     AppState.workspaces = [data, ...(AppState.workspaces || [])];
     AppState.workspace = data;
     localStorage.setItem('motion-workspace-id', data.id);
+    setLiveIds(readLiveIds);
     forceUpdate((value) => value + 1);
     showToast('Team created', 'success');
     window.location.hash = 'dashboard';
