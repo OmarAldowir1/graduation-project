@@ -6,7 +6,8 @@ import {
   addMessageToChat,
   deleteAIChat
 } from '../lib/aiChatStore.js';
-import { chatWithMotionAI } from '../lib/motionAI.js';
+import { runAgent } from '../lib/agent.js';
+import AgentActionCard from './AgentActionCard.jsx';
 import { parseAttachedDocument } from '../lib/documentParser.js';
 import {
   getActiveEditor,
@@ -112,9 +113,7 @@ function formatInline(str) {
 
 export default function AIPageSidebar({
   isOpen,
-  onClose,
-  workspace,
-  user
+  onClose
 }) {
   const [chats, setChats] = useState(getStoredChats);
   const [activeChatId, setActiveChatId] = useState(() => chats[0]?.id || null);
@@ -246,26 +245,17 @@ export default function AIPageSidebar({
     setIsGenerating(true);
 
     try {
-      // Gather active page context if requested
-      const pageContext = (includePageContext && activeEditor) ? {
-        title: activeEditor.getTitle?.() || 'Untitled',
-        text: activeEditor.getText?.() || '',
-        html: activeEditor.getHtml?.() || ''
-      } : null;
-
-      const chatHistory = currentChat?.messages || [];
-
-      const aiReply = await chatWithMotionAI({
-        messages: chatHistory,
-        newUserPrompt: messageText,
-        attachedFile: fileToUpload,
-        workspaceContext: workspace,
-        pageContext
-      });
-
+      // Same AI as "Ask AI": it can answer AND propose real changes (projects, teams,
+      // tasks, pages) that you approve. It focuses on the open page when that's on.
+      const history = (getStoredChats().find((chat) => chat.id === targetChatId)?.messages || []).slice(0, -1);
+      const focusPageId = includePageContext && activeEditor?.pageId ? activeEditor.pageId : null;
+      const result = await runAgent({ prompt: messageText, history, attachment: fileToUpload, focusPageId });
+      const refMap = Object.fromEntries([...result.context.refs].map(([ref, entry]) => [ref, { kind: entry.kind, id: entry.id, title: entry.title }]));
       addMessageToChat(targetChatId, {
         sender: 'ai',
-        text: aiReply
+        text: result.reply || (result.actions.length ? 'Here is what I can do — review and apply:' : 'Done.'),
+        ...(result.actions.length ? { actions: result.actions, refMap, actionState: 'pending' } : {}),
+        ...(result.dropped?.length ? { dropped: result.dropped.length } : {})
       });
 
       setChats(getStoredChats());
@@ -522,7 +512,21 @@ export default function AIPageSidebar({
                         {renderMarkdownSnippet(msg.text)}
                       </div>
 
+                      {msg.actions?.length ? (
+                        <AgentActionCard
+                          chatId={currentChat.id}
+                          message={msg}
+                          onApplied={({ failed }) => {
+                            setChats(getStoredChats());
+                            window.dispatchEvent(new CustomEvent('motion:pages-changed'));
+                            window.dispatchEvent(new CustomEvent('groupify:refresh-page'));
+                            if (!failed) showToast('Done — the changes are in your workspace', 'success');
+                          }}
+                        />
+                      ) : null}
+
                       {/* Control Page Actions for this AI Response */}
+                      {msg.actions?.length ? null : (
                       <div className="pt-2.5 border-t border-outline-variant/15 flex flex-wrap gap-1.5">
                         <button
                           type="button"
@@ -556,6 +560,7 @@ export default function AIPageSidebar({
                           <span className="material-symbols-outlined text-xs">content_copy</span>
                         </button>
                       </div>
+                      )}
                     </div>
                   )}
                 </div>

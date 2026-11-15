@@ -1,5 +1,5 @@
 import {AIProviderError, isFreeAIConfigured, requestFreeAI} from '../_shared/cloudflareAI.js';
-import {AGENT_INSTRUCTIONS, AGENT_LIMITS, formatSnapshot, validateAgentOutput, validateSnapshot} from '../_shared/agentContract.js';
+import {AGENT_INSTRUCTIONS, AGENT_LIMITS, formatSnapshot, validateAgentOutput, validateSnapshot, parseModelJson, needsTaskFollowUp, taskFollowUpPrompt, mergeTaskFollowUp, parseTaskLines, taskFollowUpProjectRef} from '../_shared/agentContract.js';
 
 const CHAT_INSTRUCTIONS = `You are Groupify AI, a helpful workspace assistant and academic tutor. Use only the supplied conversation and document text; do not claim to read other files or pages. Answer in the user's language. Use clear Markdown when helpful. You cannot edit the page or create records; the user must apply any suggested content themselves.`;
 const EDIT_INSTRUCTIONS = 'You are a writing assistant. Return only the resulting text, without quotes, introductions, or explanations.';
@@ -80,7 +80,22 @@ export function createTextAIHandler({env, fetchImpl = fetch, authenticate, reser
       if (!quota?.allowed) throw new RequestError(429, 'FREE_LIMIT_REACHED', 'The free AI usage limit has been reached. Please try again later. No paid service will be used.');
       if (agentSnapshot) {
         const output = await requestFreeAI({env, fetchImpl, messages, maxTokens, json: true});
-        return reply(200, {agent: validateAgentOutput(output, agentSnapshot)});
+        let plan = parseModelJson(output);
+        // Asked for a plan but got no tasks: ask once more, only for the tasks.
+        if (needsTaskFollowUp(input.prompt, plan)) {
+          try {
+            // Plain text lines (not JSON mode): the free model keeps long lists intact this way.
+            const followUp = await requestFreeAI({env, fetchImpl, maxTokens: 4000, messages: [
+              ...messages,
+              {role: 'assistant', content: JSON.stringify(plan).slice(0, 12000)},
+              {role: 'user', content: taskFollowUpPrompt(plan)}
+            ]});
+            // It may answer with "TASK:" lines or with JSON actions: take whichever it gave.
+            const lineTasks = typeof followUp === 'string' ? parseTaskLines(followUp, taskFollowUpProjectRef(plan)) : [];
+            plan = mergeTaskFollowUp(plan, lineTasks.length ? {actions: lineTasks} : parseModelJson(followUp));
+          } catch { /* keep the first answer; the user can ask again */ }
+        }
+        return reply(200, {agent: validateAgentOutput(plan, agentSnapshot)});
       }
       const output = await requestFreeAI({env, fetchImpl, messages, maxTokens});
       if (typeof output !== 'string') throw new RequestError(502, 'INVALID_DRAFT', 'AI returned an invalid response.');

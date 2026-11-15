@@ -177,7 +177,7 @@ export function describeAction(action, refs, createdTitles = new Map()) {
       return { icon: 'groups', text: `Update team “${name(action.team)}”`, detail: bits.join(' · ') };
     }
     case 'create_task': {
-      const bits = [action.team ? `team ${name(action.team)}` : action.project && `in ${name(action.project)}`, action.owner && `owner ${name(action.owner)}`, action.due && `due ${action.due}`, action.priority && PRIORITY_LABEL[action.priority], Number.isFinite(action.progress) && action.progress > 0 && `${action.progress}%`].filter(Boolean);
+      const bits = [action.team ? `team ${name(action.team)}` : action.project && `in ${name(action.project)}`, action.owner && `owner ${name(action.owner)}`, action.due && `due ${action.due}`, action.priority && PRIORITY_LABEL[action.priority], Number.isFinite(action.progress) && action.progress > 0 && `${action.progress}%`, action.steps?.length && `${action.steps.length} steps`].filter(Boolean);
       return { icon: 'add_task', text: `Create task “${action.title}”`, detail: bits.join(' · ') };
     }
     case 'update_task': {
@@ -267,7 +267,8 @@ export async function executeAgentActions(actions, context) {
         navigateTo ??= `project/${projectId}/teams`;
       } else if (action.type === 'update_team') {
         const teamId = idOf(action.team, 'M');
-        const team = (context.teams || []).find((item) => item.id === teamId);
+        let team = (context.teams || []).find((item) => item.id === teamId);
+        if (!team) team = ((await getWorkspaceTeams(workspaceId)).data || []).find((item) => item.id === teamId);
         if (!team) throw new Error('Team not found.');
         const { error } = await updateTeam(team, {
           name: action.name || team.name,
@@ -284,7 +285,12 @@ export async function executeAgentActions(actions, context) {
         const { data: task, error } = await createTask(action.title, {
           teamId,
           progress: action.status === 'done' ? 100 : action.progress,
-          details: action.description ? { description: action.description } : undefined,
+          details: action.description || action.steps?.length
+            ? {
+                ...(action.description ? { description: action.description } : {}),
+                ...(action.steps?.length ? { checklist: action.steps.map((text) => ({ id: crypto.randomUUID(), text, done: false })) } : {})
+              }
+            : undefined,
           workspaceId,
           pageId: projectId,
           status: action.status || 'todo',

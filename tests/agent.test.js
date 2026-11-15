@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { validateSnapshot, formatSnapshot, validateAgentOutput } from '../supabase/functions/_shared/agentContract.js';
+import { validateSnapshot, formatSnapshot, validateAgentOutput, needsTaskFollowUp, mergeTaskFollowUp, taskFollowUpPrompt, parseTaskLines } from '../supabase/functions/_shared/agentContract.js';
 import { markdownToHtml } from '../src/lib/markdown.js';
 
 const snapshot = validateSnapshot({
@@ -115,4 +115,63 @@ test('builds a team plan: project, teams with leaders, then team tasks', () => {
 test('allows big plans of up to 40 actions', () => {
   const actions = Array.from({ length: 45 }, (_, index) => ({ type: 'create_task', title: `Task ${index}`, project: 'P1' }));
   assert.equal(validateAgentOutput(JSON.stringify({ reply: 'ok', actions }), teamSnapshot).actions.length, 40);
+});
+
+test('keeps task steps as a short checklist and asks for real plans', () => {
+  const out = validateAgentOutput(JSON.stringify({
+    reply: 'Created your plan.',
+    actions: [
+      { type: 'create_project', ref: 'NEW1', title: 'Restaurant booking website', template: 'blank' },
+      { type: 'create_task', title: 'Design the booking form', project: 'NEW1', owner: 'U1', steps: ['List the fields', '', 'Sketch the layout', 42, ...Array(10).fill('extra step')] }
+    ]
+  }), snapshot);
+  assert.equal(out.actions.length, 2);
+  assert.deepEqual(out.actions[1].steps.slice(0, 3), ['List the fields', 'Sketch the layout', '42']);
+  assert.equal(out.actions[1].steps.length, 8);
+});
+
+test('asks again for tasks when a plan comes back without any', () => {
+  const planOnly = { reply: 'Created a plan and 12 tasks.', actions: [
+    { type: 'create_project', ref: 'NEW1', title: 'Restaurant booking website', template: 'blank' },
+    { type: 'create_page', title: 'Plan', project: 'NEW1', content: '# Plan' }
+  ] };
+  assert.equal(needsTaskFollowUp('plan all of the tasks for my restaurant website', planOnly), true);
+  assert.equal(needsTaskFollowUp('what is overdue?', planOnly), false);
+  assert.equal(needsTaskFollowUp('plan it', { actions: [...planOnly.actions, { type: 'create_task', title: 'x' }] }), true);
+  const six = Array.from({ length: 6 }, (_, i) => ({ type: 'create_task', title: `t${i}` }));
+  assert.equal(needsTaskFollowUp('plan it', { actions: [...planOnly.actions, ...six] }), false);
+  const deduped = mergeTaskFollowUp({ actions: [{ type: 'create_task', title: 'Design the form' }] }, { actions: [{ type: 'create_task', title: 'design the form ' }, { type: 'create_task', title: 'Build the API' }] });
+  assert.deepEqual(deduped.actions.map((a) => a.title), ['Design the form', 'Build the API']);
+  assert.match(taskFollowUpPrompt(planOnly), /TASK: <title> \| <due date/);
+  const merged = mergeTaskFollowUp(planOnly, { actions: [{ type: 'create_task', title: 'Design the booking form', project: 'NEW1', owner: 'U1' }, { type: 'comment', page: 'G1', text: 'ignored' }] });
+  const out = validateAgentOutput(merged, snapshot);
+  assert.deepEqual(out.actions.map((a) => a.type), ['create_project', 'create_page', 'create_task']);
+});
+
+test('recovers actions the model put under garbled keys', () => {
+  const garbled = { reply: 'Plan ready.', actions: [{ type: 'create_project', ref: 'NEW1', title: 'Restaurant site' }],
+    "actions':[{": { type: 'create_task', title: 'Research the stack', project: 'NEW1', owner: 'U1' },
+    extra: [{ type: 'create_task', title: 'Deploy the website', project: 'NEW1' }, { type: 'drop_database' }] };
+  const out = validateAgentOutput(garbled, snapshot);
+  assert.deepEqual(out.actions.map((a) => a.title), ['Restaurant site', 'Research the stack', 'Deploy the website']);
+});
+
+test('reads plain-text task lines from the follow-up', () => {
+  const text = `Here you go:
+TASK: Design the booking form | 2026-11-20 | high | U1 | Form for date, time and party size | Pick fields; Sketch layout; Review
+- TASK: Build the reservations API | 2026-11-27 | urgent | u1 | Save and list bookings | Model tables; Write endpoints
+TASK: Deploy the site | 2026-12-15 | medium | someone | Put it online |
+Not a task line`;
+  const tasks = parseTaskLines(text, 'NEW1');
+  assert.equal(tasks.length, 3);
+  assert.deepEqual(tasks[0], { type: 'create_task', title: 'Design the booking form', project: 'NEW1', due: '2026-11-20', priority: 'high', owner: 'U1', description: 'Form for date, time and party size', steps: ['Pick fields', 'Sketch layout', 'Review'] });
+  assert.equal(tasks[1].owner, 'U1');
+  assert.equal(tasks[2].owner, undefined);
+  const out = validateAgentOutput({ reply: 'ok', actions: [{ type: 'create_project', ref: 'NEW1', title: 'Site' }, ...tasks] }, snapshot);
+  assert.equal(out.actions.filter((a) => a.type === 'create_task').length, 3);
+});
+
+test('reads steps written as one "a; b; c" string', () => {
+  const out = validateAgentOutput({ reply: 'ok', actions: [{ type: 'create_task', title: 'Plan features', owner: 'U1', steps: 'Brainstorm features; Prioritize; Write the list' }] }, snapshot);
+  assert.deepEqual(out.actions[0].steps, ['Brainstorm features', 'Prioritize', 'Write the list']);
 });

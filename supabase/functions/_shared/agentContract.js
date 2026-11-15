@@ -99,7 +99,7 @@ Actions (include only the fields you need):
 - {"type":"append_to_page","page":"G1","content":"markdown"}
 - {"type":"create_team","ref":"NEW3","project":"P1 or NEW1","name":"Design","leader":"U2","members":["U2","U3"],"color":"blue|teal|green|amber|orange|red|pink|purple|slate"}
 - {"type":"update_team","team":"M1","name":"...","leader":"U2","members":["U2","U4"]}
-- {"type":"create_task","title":"...","project":"P1 or NEW1","team":"M1 or NEW3","owner":"U1","due":"YYYY-MM-DD","priority":"low|medium|high|urgent","status":"todo|in_progress|done","progress":0,"description":"..."}
+- {"type":"create_task","title":"...","project":"P1 or NEW1","team":"M1 or NEW3","owner":"U1","due":"YYYY-MM-DD","priority":"low|medium|high|urgent","status":"todo|in_progress|done","progress":0,"description":"...","steps":["first step","second step"]}
 - {"type":"update_task","task":"T1","title":"...","status":"...","priority":"...","owner":"U1 or none","due":"YYYY-MM-DD or none","progress":0-100,"team":"M1 or none"}
 - {"type":"comment","page":"G1","text":"...","mention":["U2"]}   (use "task":"T1" instead of "page" to comment on a task)
 - {"type":"open","target":"P1|G1|T1|home|my-tasks|all-tasks|team-chat|settings|team"}
@@ -107,6 +107,11 @@ Actions (include only the fields you need):
 Rules:
 1. Questions ("what is overdue?", "who owns X?", "summarize project Y") → answer in "reply" from the context, with no actions, and list the refs you used in "sources" (max 6).
 2. Requests to change things → propose actions and say in "reply" what they will do. The user reviews them before anything happens, so propose the complete set (e.g. a project plus all its tasks).
+2a. Requests to PLAN, ORGANIZE, SET UP, BREAK DOWN, SCHEDULE, CREATE or BUILD something are jobs, not questions: ALWAYS answer them with actions, never with a plan written only in "reply". For new work: create_project (template "blank", a clear title), create_page "Plan" in that project with the full plan in Markdown (goal, scope, phases with dates, risks), then the concrete tasks (usually 8-20) with an owner, a due date spread realistically from TODAY, a priority, a one-sentence description and 2-5 short "steps" each. If a matching project already exists, add to it instead of creating a new one.
+2b. Keep "reply" to 1-3 sentences that say what you created. The details belong in the page and the tasks, not in the reply.
+2c. If the user works alone ("only me", "no team", "solo", "by myself"), assign every task to the user (THE USER IS ref) and do not create teams.
+2d. If the user is looking at a page and asks to write, add or plan "here" / "in this page", use append_to_page on that page.
+2e. If the user asks you to write or build a document (requirements, user stories, database design, checklist, study guide, report draft…), create_page (or append_to_page) with the complete, real content, not an outline of what it should contain.
 3. Something created in the same response can be referenced by its "ref" (NEW1, NEW2...) in later actions.
 4. "me"/"my" means the user. Resolve relative dates ("next Friday") using TODAY. Use only members that exist; never invent people.
 5. If a request is ambiguous (e.g. two projects match), ask a short question in "reply" and propose no actions.
@@ -120,7 +125,7 @@ Rules:
 
 // ---------- output validation ----------
 
-function parseModelJson(output) {
+export function parseModelJson(output) {
   if (output && typeof output === 'object' && !Array.isArray(output)) return output;
   const text = String(output || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   try { return JSON.parse(text); } catch { /* fall through */ }
@@ -134,8 +139,32 @@ function parseModelJson(output) {
 }
 
 // Returns { reply, actions, read, dropped } — invalid actions are dropped, not fatal.
+// The free model sometimes garbles its JSON keys (e.g. "actions':[{") so actions end up
+// outside the "actions" list. Collect every action-shaped object anywhere in the answer,
+// in order. Each one is still fully validated below.
+const ACTION_TYPES = new Set(['create_project', 'create_team', 'update_team', 'create_page', 'append_to_page', 'create_task', 'update_task', 'comment', 'open']);
+export function collectActions(plan) {
+  const found = [];
+  const seen = new Set();
+  const walk = (value, depth = 0) => {
+    if (!value || typeof value !== 'object' || depth > 6 || seen.has(value)) return;
+    seen.add(value);
+    if (!Array.isArray(value) && ACTION_TYPES.has(value.type)) found.push(value);
+    for (const child of Array.isArray(value) ? value : Object.values(value)) walk(child, depth + 1);
+  };
+  // Everything in the real "actions" list is kept (unknown types are reported as skipped).
+  for (const item of Array.isArray(plan?.actions) ? plan.actions : []) {
+    if (item && typeof item === 'object' && !Array.isArray(item) && typeof item.type === 'string' && !ACTION_TYPES.has(item.type)) { seen.add(item); found.push(item); }
+    else walk(item);
+  }
+  for (const [key, child] of Object.entries(plan || {})) if (key !== 'actions') walk(child);
+  if (plan && ACTION_TYPES.has(plan.type)) found.push(plan);
+  return found;
+}
+
 export function validateAgentOutput(output, snapshot) {
   const plan = parseModelJson(output);
+  plan.actions = collectActions(plan);
   const refs = new Set([...snapshot.members, ...snapshot.projects, ...(snapshot.teams || []), ...snapshot.pages, ...snapshot.tasks].map((item) => item.ref));
   const created = new Set();
   const known = (value, prefix) => (isRef(value, prefix) && refs.has(value)) || (isNewRef(value) && created.has(value));
@@ -214,6 +243,9 @@ export function validateAgentOutput(output, snapshot) {
         if (raw.team) action.team = raw.team;
         if (Number.isFinite(Number(raw.progress)) && raw.progress !== null && raw.progress !== '') action.progress = Math.max(0, Math.min(100, Math.round(Number(raw.progress))));
         if (typeof raw.description === 'string' && raw.description.trim()) action.description = raw.description.slice(0, 4000);
+        const rawSteps = Array.isArray(raw.steps) ? raw.steps : typeof raw.steps === 'string' ? raw.steps.split(/;|\n/) : [];
+        const steps = rawSteps.map((step) => clip(step, 200)).filter(Boolean).slice(0, 8);
+        if (steps.length) action.steps = steps;
         actions.push(action);
         break;
       }
@@ -266,4 +298,67 @@ export function validateAgentOutput(output, snapshot) {
   let reply = typeof plan.reply === 'string' ? plan.reply.trim().slice(0, 8000) : '';
   if (!reply && !actions.length && !read.length) reply = 'Sorry, I could not work out what to do. Could you rephrase the request?';
   return { reply, actions, read, sources, dropped };
+}
+
+// ---------- "you promised tasks but sent none" ----------
+// The free model sometimes plans a project and says it made tasks, then stops
+// before writing them. When the user asked for a plan and no tasks came back,
+// the server asks once more, only for the tasks, and merges them in.
+const PLAN_REQUEST = /\b(plan|planning|tasks?|organi[sz]e|break\s*(it\s*)?down|schedule|roadmap|steps|to-?do|set\s*up|milestones?)\b/i;
+
+const MIN_PLAN_TASKS = 6;
+
+export function needsTaskFollowUp(prompt, plan) {
+  const actions = collectActions(plan);
+  if (!PLAN_REQUEST.test(String(prompt || ''))) return false;
+  if (actions.filter((action) => action?.type === 'create_task').length >= MIN_PLAN_TASKS) return false;
+  return actions.some((action) => ['create_project', 'create_page', 'append_to_page'].includes(action?.type));
+}
+
+export function taskFollowUpPrompt(plan) {
+  const project = collectActions(plan).find((action) => action?.type === 'create_project' && action.ref);
+  const existing = collectActions(plan).filter((action) => action?.type === 'create_task').map((action) => action.title).filter(Boolean);
+  const intro = existing.length
+    ? `The plan only has ${existing.length} task(s): ${existing.map((title) => `"${title}"`).join(', ')}. List the REST of the work (do not repeat those).`
+    : 'The plan has no tasks yet. List them.';
+  return `${intro}
+Write 8-15 concrete tasks in a sensible order, ONE PER LINE, exactly in this format and nothing else:
+TASK: <title> | <due date YYYY-MM-DD> | <low|medium|high|urgent> | <owner ref from MEMBERS, the user if they work alone> | <one-sentence description> | <step one; step two; step three>
+Due dates must be spread out starting from TODAY${project ? '' : ''}.`;
+}
+
+// Turns "TASK: title | date | priority | owner | description | step; step" lines into actions.
+export function parseTaskLines(text, projectRef = null) {
+  return String(text || '').split('\n')
+    .map((line) => line.replace(/^\s*(?:[-*\d.)]+\s*)?/, '').trim())
+    .filter((line) => /^task\s*:/i.test(line))
+    .map((line) => {
+      const [title, due, priority, owner, description, steps] = line.replace(/^task\s*:\s*/i, '').split('|').map((part) => part.trim());
+      const action = { type: 'create_task', title };
+      if (projectRef) action.project = projectRef;
+      if (due) action.due = due;
+      if (priority) action.priority = priority.toLowerCase();
+      if (owner && /^U\d{1,4}$/i.test(owner)) action.owner = owner.toUpperCase();
+      if (description) action.description = description;
+      if (steps) action.steps = steps.split(';').map((step) => step.trim()).filter(Boolean);
+      return action;
+    })
+    .filter((action) => action.title);
+}
+
+export function taskFollowUpProjectRef(plan) {
+  return collectActions(plan).find((action) => action?.type === 'create_project' && action.ref)?.ref || null;
+}
+
+export function mergeTaskFollowUp(plan, followUp) {
+  const actions = collectActions(plan);
+  const titles = new Set(actions.filter((action) => action?.type === 'create_task').map((action) => String(action.title || '').trim().toLowerCase()));
+  const extra = collectActions(followUp).filter((action) => {
+    if (action?.type !== 'create_task') return false;
+    const key = String(action.title || '').trim().toLowerCase();
+    if (!key || titles.has(key)) return false;
+    titles.add(key);
+    return true;
+  });
+  return { ...plan, actions: [...actions, ...extra] };
 }

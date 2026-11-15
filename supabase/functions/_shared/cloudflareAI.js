@@ -43,7 +43,8 @@ export async function requestFreeAI({env, fetchImpl, messages, json = false, max
     throw new AIProviderError(503, 'PROVIDER_UNAVAILABLE', 'AI is temporarily unavailable. Please try again later.');
   }
   const output = payload.result?.response;
-  if ((typeof output !== 'string' || !output.trim()) && (!json || !output || typeof output !== 'object' || Array.isArray(output))) {
+  // Cloudflare turns JSON-looking answers into objects even outside JSON mode; accept both.
+  if ((typeof output !== 'string' || !output.trim()) && (!output || typeof output !== 'object' || Array.isArray(output))) {
     throw new AIProviderError(502, 'INVALID_DRAFT', 'AI returned an empty response. Please try again.');
   }
   return output;
