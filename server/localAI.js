@@ -58,6 +58,14 @@ export function localAIPlugin(publicEnv) {
         if (!response.ok) throw new Error('Lesson AI quota storage unavailable');
         return response.json();
       };
+      // The person's role in the lesson's team (null when they are not in it). Needs sql/lessons.sql.
+      const authorizeLesson = async (token, lessonId) => {
+        const response = await fetch(`${base}/rest/v1/rpc/lesson_ai_access`, {
+          method: 'POST', headers: headers(token), body: JSON.stringify({p_lesson: lessonId}), signal: AbortSignal.timeout(10000)
+        });
+        if (!response.ok) throw new Error('Lesson permissions unavailable');
+        return response.json();
+      };
       const authorizePage = async (token, pageId) => {
         const response = await fetch(`${base}/rest/v1/pages?select=id&id=eq.${pageId}&limit=1`, {
           headers: headers(token), signal: AbortSignal.timeout(10000)
@@ -67,7 +75,7 @@ export function localAIPlugin(publicEnv) {
       const handlers = {
         '/cloudflare-page-ai': createPageAIHandler({env, authenticate, reserveQuota, authorizePage}),
         '/text-ai': createTextAIHandler({env, authenticate, reserveQuota}),
-        '/lesson-ai': createLessonAIHandler({env, authenticate, reserveQuota: reserveLessonQuota})
+        '/lesson-ai': createLessonAIHandler({env, authenticate, reserveQuota: reserveLessonQuota, authorizeLesson})
       };
       server.middlewares.use('/__motion_ai', async (req, res, next) => {
         const handler = handlers[req.url?.split('?')[0]];

@@ -90,7 +90,14 @@ function LessonRoom({ lessonId, user }) {
   const [pending, setPending] = useState({ question: '', note: '' });
   const [askError, setAskError] = useState('');
   const [saving, setSaving] = useState(false);
+  // The person's role in the lesson's team decides what they can do (same rules as the database).
+  const [role, setRole] = useState(null);
+  const canEdit = ['owner', 'admin', 'editor'].includes(role);
+  const canAsk = canEdit || role === 'commenter';
   const playerRef = useRef(null);
+  const lessonRef = useRef(null);
+  const canEditRef = useRef(false);
+  useEffect(() => { lessonRef.current = lesson; canEditRef.current = canEdit; });
   const abortRef = useRef(null);
   const askEnd = useRef(null);
 
@@ -107,8 +114,13 @@ function LessonRoom({ lessonId, user }) {
       if (!lessonResult.data) { setLoadError('not-found'); return; }
       setLesson(lessonResult.data);
       setQuestions(questionsResult.data || []);
-      const { data: page } = await supabase.from('pages').select('id, title').eq('id', lessonResult.data.project_id).maybeSingle();
-      if (active) setProject(page || null);
+      const [{ data: page }, { data: teamRole }] = await Promise.all([
+        supabase.from('pages').select('id, title').eq('id', lessonResult.data.project_id).maybeSingle(),
+        supabase.rpc('workspace_role_of', { target_workspace: lessonResult.data.workspace_id })
+      ]);
+      if (!active) return;
+      setProject(page || null);
+      setRole(typeof teamRole === 'string' ? teamRole : null);
     }
     void load();
     return () => { active = false; abortRef.current?.abort(); };
@@ -124,16 +136,17 @@ function LessonRoom({ lessonId, user }) {
   }, []);
   useEffect(() => { if (tab === 'ask') askEnd.current?.scrollIntoView({ block: 'nearest' }); }, [tab, questions.length, asking]);
 
-  const handleReady = useCallback(async ({ duration, title }) => {
+  // The player reports the real length and title; editors fill them in on the lesson once.
+  const handleReady = useCallback(({ duration, title }) => {
     setPlayerState({ ready: true, duration, error: '' });
-    setLesson((current) => {
-      if (!current) return current;
-      const updates = {};
-      if (duration && !current.duration_seconds) updates.duration_seconds = Math.min(duration, LESSON_LIMITS.maxDuration);
-      if (title && current.title === 'YouTube lesson') updates.title = title.slice(0, 200);
-      if (Object.keys(updates).length) void updateLesson(current.id, updates);
-      return Object.keys(updates).length ? { ...current, ...updates } : current;
-    });
+    const current = lessonRef.current;
+    if (!current) return;
+    const updates = {};
+    if (duration && !current.duration_seconds) updates.duration_seconds = Math.min(duration, LESSON_LIMITS.maxDuration);
+    if (title && current.title === 'YouTube lesson') updates.title = title.slice(0, 200);
+    if (!Object.keys(updates).length) return;
+    setLesson((latest) => (latest ? { ...latest, ...updates } : latest));
+    if (canEditRef.current) void updateLesson(current.id, updates);
   }, []);
   const handleError = useCallback((code) => {
     setPlayerState((current) => ({ ...current, error: code === 'blocked'
@@ -171,7 +184,7 @@ function LessonRoom({ lessonId, user }) {
   const tooLong = duration > LESSON_LIMITS.maxDuration;
 
   async function analyze() {
-    if (!lesson || progress || !duration) return;
+    if (!lesson || progress || !duration || !canEdit) return;
     const controller = new AbortController();
     abortRef.current = controller;
     setAnalysisError('');
@@ -197,7 +210,7 @@ function LessonRoom({ lessonId, user }) {
   async function ask(event) {
     event.preventDefault();
     const text = question.trim();
-    if (!text || asking || !lesson || !segments.length) return;
+    if (!text || asking || !lesson || !segments.length || !canAsk) return;
     setAsking(true);
     setAskError('');
     setPending({ question: text, note: '' });
@@ -220,7 +233,7 @@ function LessonRoom({ lessonId, user }) {
   }
 
   async function saveAsPage() {
-    if (!lesson || saving) return;
+    if (!lesson || saving || !canEdit) return;
     setSaving(true);
     const link = (seconds) => `<a href="${escapeHtml(lessonLink(lesson.video_id, seconds))}">${formatTime(seconds)}</a>`;
     const html = [
@@ -234,7 +247,7 @@ function LessonRoom({ lessonId, user }) {
     const { data, error } = await createPage(lesson.workspace_id, `Lesson notes: ${lesson.title}`.slice(0, 200), 'note', { html }, lesson.project_id);
     setSaving(false);
     if (error || !data) return showToast(`Could not create the page: ${error?.message || 'unknown error'}`, 'error');
-    window.dispatchEvent(new CustomEvent('motion:page-changed', { detail: data.id }));
+    window.dispatchEvent(new CustomEvent('motion:pages-changed', { detail: data.id }));
     showToast('Lesson notes saved as a page', 'success');
     window.location.hash = `editor/${data.id}`;
   }
@@ -283,18 +296,27 @@ function LessonRoom({ lessonId, user }) {
           {playerState.error && <p className="meeting-notice" role="status"><span className="material-symbols-outlined" aria-hidden="true">info</span>{playerState.error}</p>}
           <div className="lesson-video-actions">
             <a className="project-btn" href={lessonLink(lesson.video_id)} target="_blank" rel="noreferrer"><span className="material-symbols-outlined" aria-hidden="true">open_in_new</span>YouTube</a>
-            {isReady && <button type="button" className="project-btn" disabled={saving} onClick={saveAsPage}><span className="material-symbols-outlined" aria-hidden="true">note_add</span>{saving ? 'Saving…' : 'Save as page'}</button>}
-            {isReady && <button type="button" className="project-btn" disabled={Boolean(progress)} onClick={async () => {
+            {isReady && canEdit && <button type="button" className="project-btn" disabled={saving} onClick={saveAsPage}><span className="material-symbols-outlined" aria-hidden="true">note_add</span>{saving ? 'Saving…' : 'Save as page'}</button>}
+            {isReady && canEdit && <button type="button" className="project-btn" disabled={Boolean(progress)} onClick={async () => {
               if (!await requestConfirmation('Analyse this lesson again? The current notes, summary and chapters will be replaced.')) return;
-              const { data } = await updateLesson(lesson.id, { status: 'new', analyzed_seconds: 0 });
-              if (data) setLesson(data);
+              const { data, error } = await updateLesson(lesson.id, { status: 'new', analyzed_seconds: 0 });
+              if (error || !data) return showToast(`Could not start again: ${error?.message || 'you may not have permission'}`, 'error');
+              setLesson(data);
             }}><span className="material-symbols-outlined" aria-hidden="true">refresh</span>Re-analyse</button>}
-            {lesson.created_by === user?.id && <button type="button" className="project-btn lesson-danger" onClick={remove}><span className="material-symbols-outlined" aria-hidden="true">delete</span>Delete</button>}
+            {(lesson.created_by === user?.id || ['owner', 'admin'].includes(role)) && <button type="button" className="project-btn lesson-danger" onClick={remove}><span className="material-symbols-outlined" aria-hidden="true">delete</span>Delete</button>}
           </div>
         </div>
 
         <div className="lesson-panel project-section" onClick={onPanelClick}>
-          {!isReady && (
+          {!isReady && !canEdit && !progress && (
+            <div className="lesson-analyze">
+              <h2>{segments.length ? 'Analysis not finished yet' : 'Not analysed yet'}</h2>
+              <p className="meeting-muted">{role
+                ? 'A team owner, admin or editor can analyse this lesson. Once they do, the notes, summary and chapters appear here for everyone.'
+                : 'Loading your permissions…'}</p>
+            </div>
+          )}
+          {!isReady && canEdit && (
             <div className="lesson-analyze" aria-busy={Boolean(progress)}>
               {progress ? (
                 <>
@@ -379,7 +401,8 @@ function LessonRoom({ lessonId, user }) {
               {tab === 'ask' && (
                 <div className="lesson-tab lesson-ask" role="tabpanel">
                   <div className="lesson-thread" role="log" aria-live="polite">
-                    {!questions.length && !asking && (
+                    {!questions.length && !asking && !canAsk && <p className="meeting-muted">No questions have been asked about this lesson yet.</p>}
+                    {!questions.length && !asking && canAsk && (
                       <div className="lesson-ask-empty">
                         <p className="meeting-muted">Ask anything about this lesson. Answers include times you can click to jump there.</p>
                         <div className="lesson-suggestions">
@@ -404,11 +427,15 @@ function LessonRoom({ lessonId, user }) {
                     <div ref={askEnd} />
                   </div>
                   {askError && <div className="team-chat-error" role="alert">{askError}</div>}
+                  {!canAsk ? (
+                    <p className="meeting-notice" role="note"><span className="material-symbols-outlined" aria-hidden="true">visibility</span>You can read the team’s questions and answers. To ask the AI yourself, a team owner or admin can make you a commenter or editor.</p>
+                  ) : (
                   <form className="meeting-composer" onSubmit={ask}>
                     <label htmlFor="lesson-question" className="sr-only">Ask about this lesson</label>
                     <input id="lesson-question" type="text" dir="auto" value={question} maxLength={LESSON_LIMITS.question} autoComplete="off" disabled={asking} placeholder="e.g. At what minute is recursion explained?" onChange={(event) => setQuestion(event.target.value)} />
                     <button type="submit" className="project-btn primary" disabled={asking || !question.trim()} aria-label="Ask"><span className="material-symbols-outlined" aria-hidden="true">send</span></button>
                   </form>
+                  )}
                 </div>
               )}
             </>

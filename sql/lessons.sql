@@ -1,17 +1,14 @@
 -- YouTube lessons: a video analysed once into timestamped notes, then searched and asked about.
--- Run once in the Supabase SQL editor (after schema.sql and projects.sql). Safe to re-run; no data is removed.
+-- Run once in the Supabase SQL editor, after sql/project-teams.sql (it uses public.workspace_role_of).
+-- Safe to re-run; no data is removed.
+--
+-- Who can do what (the same rules as the rest of Groupify):
+--   * Everyone in the team can watch lessons and read their notes and questions.
+--   * Owners, admins and editors can add lessons and run the AI analysis.
+--   * Commenters and above can ask the AI questions (like commenting); viewers only read.
+--   * The person who added a lesson, or the team owner/admins, can delete it.
+--   * The person who asked a question, or the team owner/admins, can delete it.
 BEGIN;
-
--- Workspace-access helper shared with team chat and meetings (same definition as sql/team-chat.sql).
-CREATE OR REPLACE FUNCTION public.can_access_workspace_chat(target_workspace uuid)
-RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog AS $$
-  SELECT auth.uid() IS NOT NULL AND (
-    EXISTS (SELECT 1 FROM public.workspaces WHERE id = target_workspace AND owner_id = auth.uid())
-    OR EXISTS (SELECT 1 FROM public.workspace_members WHERE workspace_id = target_workspace AND user_id = auth.uid())
-  );
-$$;
-REVOKE ALL ON FUNCTION public.can_access_workspace_chat(uuid) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION public.can_access_workspace_chat(uuid) TO authenticated;
 
 CREATE TABLE IF NOT EXISTS public.lessons (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -69,32 +66,56 @@ ALTER TABLE public.lesson_questions ENABLE ROW LEVEL SECURITY;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.lessons TO authenticated;
 GRANT SELECT, INSERT, DELETE ON public.lesson_questions TO authenticated;
 
+-- Earlier versions of this file let every team member (even viewers) change lessons; remove those rules.
 DROP POLICY IF EXISTS "Members read lessons" ON public.lessons;
-CREATE POLICY "Members read lessons" ON public.lessons FOR SELECT TO authenticated
-USING (public.can_access_workspace_chat(workspace_id));
 DROP POLICY IF EXISTS "Members add lessons" ON public.lessons;
-CREATE POLICY "Members add lessons" ON public.lessons FOR INSERT TO authenticated
-WITH CHECK (created_by = auth.uid() AND public.can_access_workspace_chat(workspace_id)
-  AND EXISTS (SELECT 1 FROM public.pages p WHERE p.id = project_id AND p.workspace_id = lessons.workspace_id));
 DROP POLICY IF EXISTS "Members update lessons" ON public.lessons;
-CREATE POLICY "Members update lessons" ON public.lessons FOR UPDATE TO authenticated
-USING (public.can_access_workspace_chat(workspace_id))
-WITH CHECK (public.can_access_workspace_chat(workspace_id));
 DROP POLICY IF EXISTS "Creators delete lessons" ON public.lessons;
-CREATE POLICY "Creators delete lessons" ON public.lessons FOR DELETE TO authenticated
-USING (created_by = auth.uid() AND public.can_access_workspace_chat(workspace_id));
-
 DROP POLICY IF EXISTS "Members read lesson questions" ON public.lesson_questions;
-CREATE POLICY "Members read lesson questions" ON public.lesson_questions FOR SELECT TO authenticated
-USING (EXISTS (SELECT 1 FROM public.lessons l WHERE l.id = lesson_id AND public.can_access_workspace_chat(l.workspace_id)));
 DROP POLICY IF EXISTS "Members save lesson questions" ON public.lesson_questions;
-CREATE POLICY "Members save lesson questions" ON public.lesson_questions FOR INSERT TO authenticated
-WITH CHECK (user_id = auth.uid() AND EXISTS (
-  SELECT 1 FROM public.lessons l WHERE l.id = lesson_id AND public.can_access_workspace_chat(l.workspace_id)
-));
 DROP POLICY IF EXISTS "Askers delete their lesson questions" ON public.lesson_questions;
-CREATE POLICY "Askers delete their lesson questions" ON public.lesson_questions FOR DELETE TO authenticated
-USING (user_id = auth.uid());
+
+DROP POLICY IF EXISTS "Team members read lessons" ON public.lessons;
+CREATE POLICY "Team members read lessons" ON public.lessons FOR SELECT TO authenticated
+USING (public.workspace_role_of(workspace_id) IS NOT NULL);
+DROP POLICY IF EXISTS "Editors add lessons" ON public.lessons;
+CREATE POLICY "Editors add lessons" ON public.lessons FOR INSERT TO authenticated
+WITH CHECK (created_by = auth.uid()
+  AND public.workspace_role_of(workspace_id) IN ('owner', 'admin', 'editor')
+  AND EXISTS (SELECT 1 FROM public.pages p WHERE p.id = project_id AND p.workspace_id = lessons.workspace_id AND p.page_type = 'project'));
+DROP POLICY IF EXISTS "Editors analyse lessons" ON public.lessons;
+CREATE POLICY "Editors analyse lessons" ON public.lessons FOR UPDATE TO authenticated
+USING (public.workspace_role_of(workspace_id) IN ('owner', 'admin', 'editor'))
+WITH CHECK (public.workspace_role_of(workspace_id) IN ('owner', 'admin', 'editor'));
+DROP POLICY IF EXISTS "Author or admins delete lessons" ON public.lessons;
+CREATE POLICY "Author or admins delete lessons" ON public.lessons FOR DELETE TO authenticated
+USING (public.workspace_role_of(workspace_id) IN ('owner', 'admin')
+  OR (created_by = auth.uid() AND public.workspace_role_of(workspace_id) IS NOT NULL));
+
+DROP POLICY IF EXISTS "Team members read lesson questions" ON public.lesson_questions;
+CREATE POLICY "Team members read lesson questions" ON public.lesson_questions FOR SELECT TO authenticated
+USING (EXISTS (SELECT 1 FROM public.lessons l WHERE l.id = lesson_id AND public.workspace_role_of(l.workspace_id) IS NOT NULL));
+DROP POLICY IF EXISTS "Commenters ask lesson questions" ON public.lesson_questions;
+CREATE POLICY "Commenters ask lesson questions" ON public.lesson_questions FOR INSERT TO authenticated
+WITH CHECK (user_id = auth.uid() AND EXISTS (
+  SELECT 1 FROM public.lessons l WHERE l.id = lesson_id AND public.workspace_role_of(l.workspace_id) IN ('owner', 'admin', 'editor', 'commenter')
+));
+DROP POLICY IF EXISTS "Asker or admins delete lesson questions" ON public.lesson_questions;
+CREATE POLICY "Asker or admins delete lesson questions" ON public.lesson_questions FOR DELETE TO authenticated
+USING (user_id = auth.uid() OR EXISTS (
+  SELECT 1 FROM public.lessons l WHERE l.id = lesson_id AND public.workspace_role_of(l.workspace_id) IN ('owner', 'admin')
+));
+
+-- The lesson AI server asks this (as the signed-in person) before spending AI quota:
+-- returns the lesson's video and the person's role, or nothing when they are not in its team.
+CREATE OR REPLACE FUNCTION public.lesson_ai_access(p_lesson uuid)
+RETURNS jsonb LANGUAGE sql STABLE SECURITY INVOKER SET search_path = '' AS $$
+  SELECT jsonb_build_object('video_id', l.video_id, 'role', public.workspace_role_of(l.workspace_id))
+  FROM public.lessons l
+  WHERE l.id = p_lesson AND public.workspace_role_of(l.workspace_id) IS NOT NULL;
+$$;
+REVOKE ALL ON FUNCTION public.lesson_ai_access(uuid) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.lesson_ai_access(uuid) TO authenticated;
 
 -- Usage limits for the Gemini-backed lesson AI, kept apart from the Cloudflare quota.
 -- Google's free tier allows 8 hours of YouTube video per day for the whole project.

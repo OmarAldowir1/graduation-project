@@ -117,7 +117,7 @@ export async function renderProject(container, route) {
   }
 
   if (tab === 'lessons') {
-    await renderLessonsTab(container, { bar, project, workspaceId });
+    await renderLessonsTab(container, { bar, project, workspaceId, role });
     return;
   }
 
@@ -291,8 +291,10 @@ export async function renderProject(container, route) {
 }
 
 // YouTube lessons (from feature/youtube-ai): list the project's lessons and add new ones.
-async function renderLessonsTab(container, { bar, project, workspaceId }) {
+async function renderLessonsTab(container, { bar, project, workspaceId, role }) {
   const { data: lessons, error } = await listProjectLessons(project.id);
+  // Same rule as the database: owners, admins and editors add lessons; everyone in the team can watch them.
+  const canAddLessons = ['owner', 'admin', 'editor'].includes(role);
   const statusLabel = { ready: '<span class="meeting-status is-ended">Analysed</span>', analyzing: '<span class="meeting-status">Partly analysed</span>', new: '<span class="meeting-status">Not analysed</span>' };
   const row = (lesson) => `<li><a href="#lesson/${escapeHtml(lesson.id)}">
       <img class="lesson-thumb" src="https://i.ytimg.com/vi/${escapeHtml(lesson.video_id)}/mqdefault.jpg" alt="" loading="lazy" />
@@ -303,10 +305,10 @@ async function renderLessonsTab(container, { bar, project, workspaceId }) {
     ? `<div class="team-chat-error" role="alert">${escapeHtml(isMissingLessonsTable(error) ? LESSON_SETUP_MESSAGE : `Could not load lessons: ${error.message}`)}</div>`
     : lessons.length
       ? `<ul class="meeting-list lesson-list">${lessons.map(row).join('')}</ul>`
-      : `<div class="project-hint"><span class="material-symbols-outlined">smart_display</span><div><strong>No lessons yet</strong><p>Add a YouTube lecture or tutorial. The AI writes timestamped notes, a summary and chapters, and answers questions like “at what minute is this explained?”.</p></div></div>`;
+      : `<div class="project-hint"><span class="material-symbols-outlined">smart_display</span><div><strong>No lessons yet</strong><p>${canAddLessons ? 'Add a YouTube lecture or tutorial. The AI writes timestamped notes, a summary and chapters, and answers questions like “at what minute is this explained?”.' : 'When a team owner, admin or editor adds a YouTube lesson, it appears here with AI notes you can search and ask about.'}</p></div></div>`;
   container.innerHTML = `<div class="project-view">${bar}
     <section class="project-section">
-      <div class="project-section-head"><h2>Lessons</h2>${error ? '' : '<button type="button" class="project-btn primary" data-new-lesson><span class="material-symbols-outlined">add</span> Add YouTube lesson</button>'}</div>
+      <div class="project-section-head"><h2>Lessons</h2>${error || !canAddLessons ? '' : '<button type="button" class="project-btn primary" data-new-lesson><span class="material-symbols-outlined">add</span> Add YouTube lesson</button>'}</div>
       ${body}
     </section></div>`;
 

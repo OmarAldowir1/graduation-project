@@ -14,15 +14,20 @@ const QUOTA_MESSAGES = {
   daily: 'Today’s lesson AI limit has been reached. Please try again tomorrow.'
 };
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const EDIT_ROLES = ['owner', 'admin', 'editor'];
+const ASK_ROLES = [...EDIT_ROLES, 'commenter'];
+
 function onlyKeys(input, keys) {
   return Object.keys(input).every((key) => keys.includes(key));
 }
 
-// Modes:
-//   analyze { videoId, start, end }                       → { segments }   (Gemini watches that part of the video)
-//   outline { title?, duration, segments }                → { summary, chapters, keyPoints }
-//   ask     { title?, duration, segments, summary?, question, messages? } → { answer }
-export function createLessonAIHandler({ env, fetchImpl = fetch, authenticate, reserveQuota }) {
+// Modes (every request names its lesson, and the person must be in that lesson's team):
+//   analyze { lessonId, videoId, start, end }                       → { segments }   (owners, admins, editors)
+//   outline { lessonId, title?, duration, segments }                → { summary, chapters, keyPoints }   (owners, admins, editors)
+//   ask     { lessonId, title?, duration, segments, summary?, question, messages? } → { answer }   (commenters and above)
+// authorizeLesson(token, lessonId) → { video_id, role } for the signed-in person, or null when they can't see it.
+export function createLessonAIHandler({ env, fetchImpl = fetch, authenticate, reserveQuota, authorizeLesson }) {
   return async (request) => {
     const origin = request.headers.get('origin');
     const allowed = (env('MOTION_AI_ALLOWED_ORIGINS') || '').split(',').map((item) => item.trim()).filter(Boolean);
@@ -42,6 +47,17 @@ export function createLessonAIHandler({ env, fetchImpl = fetch, authenticate, re
       try { input = JSON.parse(body); } catch { throw new RequestError(400, 'INVALID_REQUEST', 'The request could not be read.'); }
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new RequestError(400, 'INVALID_REQUEST', 'Unsupported lesson AI request.');
       const invalid = (message = 'Unsupported lesson AI request.') => new RequestError(400, 'INVALID_REQUEST', message);
+      // Checked after the request is validated and before any quota is spent.
+      const access = async (roles, denied) => {
+        let lesson;
+        try { lesson = await authorizeLesson(token, input.lessonId); } catch {
+          throw new RequestError(503, 'SETUP_REQUIRED', 'Lesson permissions are unavailable. Make sure the latest sql/lessons.sql has been run in Supabase.');
+        }
+        if (!lesson?.role) throw new RequestError(404, 'LESSON_NOT_FOUND', 'This lesson was not found, or you are not in its team.');
+        if (!roles.includes(lesson.role)) throw new RequestError(403, 'NOT_ALLOWED', denied);
+        return lesson;
+      };
+      if (typeof input.lessonId !== 'string' || !UUID.test(input.lessonId)) throw invalid('Open the lesson again and retry.');
       const reserve = async (videoSeconds) => {
         let quota;
         try { quota = await reserveQuota(token, videoSeconds); } catch {
@@ -51,10 +67,12 @@ export function createLessonAIHandler({ env, fetchImpl = fetch, authenticate, re
       };
 
       if (input.mode === 'analyze') {
-        if (!onlyKeys(input, ['mode', 'videoId', 'start', 'end'])) throw invalid();
+        if (!onlyKeys(input, ['mode', 'lessonId', 'videoId', 'start', 'end'])) throw invalid();
         if (!isVideoId(input.videoId)) throw invalid('That does not look like a YouTube video.');
         const { start, end } = input;
         if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end <= start || end - start > LESSON_LIMITS.maxWindowSeconds || end > LESSON_LIMITS.maxDuration) throw invalid('That part of the video cannot be analysed.');
+        const lesson = await access(EDIT_ROLES, 'Only team owners, admins and editors can analyse lessons.');
+        if (lesson.video_id !== input.videoId) throw invalid('That video does not belong to this lesson.');
         await reserve(end - start);
         const output = await requestGemini({
           env, fetchImpl, hasVideo: true, schema: SEGMENTS_SCHEMA, maxOutputTokens: 16384, timeoutMs: 140000,
@@ -68,12 +86,13 @@ export function createLessonAIHandler({ env, fetchImpl = fetch, authenticate, re
 
       if (input.mode === 'outline' || input.mode === 'ask') {
         const isAsk = input.mode === 'ask';
-        if (!onlyKeys(input, isAsk ? ['mode', 'title', 'duration', 'segments', 'summary', 'question', 'messages'] : ['mode', 'title', 'duration', 'segments'])) throw invalid();
+        if (!onlyKeys(input, isAsk ? ['mode', 'lessonId', 'title', 'duration', 'segments', 'summary', 'question', 'messages'] : ['mode', 'lessonId', 'title', 'duration', 'segments'])) throw invalid();
         if (input.title !== undefined && (typeof input.title !== 'string' || input.title.length > 200)) throw invalid();
         if (!Number.isInteger(input.duration) || input.duration < 1 || input.duration > LESSON_LIMITS.maxDuration) throw invalid();
         if (!validSegments(input.segments)) throw invalid('Analyse the lesson before asking about it.');
         const notes = notesText(input.segments);
         if (!isAsk) {
+          await access(EDIT_ROLES, 'Only team owners, admins and editors can analyse lessons.');
           await reserve(0);
           const output = await requestGemini({ env, fetchImpl, schema: OUTLINE_SCHEMA, parts: [{ text: outlinePrompt({ title: input.title, notes }) }] });
           const outline = cleanOutline(output, input.duration);
@@ -84,6 +103,7 @@ export function createLessonAIHandler({ env, fetchImpl = fetch, authenticate, re
         if (input.summary !== undefined && (typeof input.summary !== 'string' || input.summary.length > LESSON_LIMITS.summary)) throw invalid();
         if (input.messages !== undefined && (!Array.isArray(input.messages) || input.messages.length > LESSON_LIMITS.history
           || input.messages.some((message) => !message || !['user', 'assistant'].includes(message.role) || typeof message.content !== 'string' || !message.content || message.content.length > LESSON_LIMITS.historyText))) throw invalid('The chat history is too long.');
+        await access(ASK_ROLES, 'Viewers can read lessons but not ask the AI. Ask a team owner or admin to make you a commenter or editor.');
         await reserve(0);
         const answer = await requestGemini({
           env, fetchImpl, system: ASK_INSTRUCTIONS, maxOutputTokens: 4096,

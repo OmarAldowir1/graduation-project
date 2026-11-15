@@ -87,6 +87,8 @@ Open a project's **Lessons** tab, click **Add YouTube lesson** and paste the lin
 - **Search and ask**: search the notes, or use **Ask AI** for questions in your own words, such as “at what minute is recursion explained?”. Answers cite times from the notes and are shared with the team.
 - **Save as page**: turns the summary, chapters and notes into a project page with links back to the video.
 
+**Who can do what** (same rules as the rest of Groupify): everyone in the team can watch lessons and read the notes and answers; commenters and above can ask the AI; owners, admins and editors can add and analyse lessons; the person who added a lesson, or the team owner/admins, can delete it. The lesson AI server checks the person's team and role before using any AI quota.
+
 Lessons use Google Gemini, because it can read a public YouTube link directly; the rest of the AI stays on Cloudflare. Setup:
 
 1. Run [`sql/lessons.sql`](sql/lessons.sql) in the Supabase SQL Editor.

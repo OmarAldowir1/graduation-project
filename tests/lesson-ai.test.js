@@ -10,7 +10,9 @@ import {
 const origin = 'http://localhost:5173';
 const gemini = (text, extra = {}) => ({ candidates: [{ content: { parts: [{ text }] }, finishReason: 'STOP', ...extra }] });
 
-function fixture({ reply = gemini('ok'), status = 200, quota = { allowed: true } } = {}) {
+const LESSON = '3f1d2c4b-5a6e-4f70-8a91-b2c3d4e5f607';
+
+function fixture({ reply = gemini('ok'), status = 200, quota = { allowed: true }, access = { video_id: 'ZK3O402wf1c', role: 'editor' } } = {}) {
   const calls = [];
   const reserved = [];
   const settings = { GEMINI_API_KEY: 'test-gemini-key-0123456789', MOTION_AI_ALLOWED_ORIGINS: origin };
@@ -18,6 +20,7 @@ function fixture({ reply = gemini('ok'), status = 200, quota = { allowed: true }
   const handler = createLessonAIHandler({
     env: (key) => settings[key],
     authenticate: async () => ({ id: 'test-user' }),
+    authorizeLesson: async (token, lessonId) => { if (access instanceof Error) throw access; return lessonId === LESSON ? access : null; },
     reserveQuota: async (token, seconds) => { reserved.push(seconds); if (quota instanceof Error) throw quota; return quota; },
     fetchImpl: async (url, options) => {
       calls.push({ url, options, body: JSON.parse(options.body) });
@@ -25,8 +28,10 @@ function fixture({ reply = gemini('ok'), status = 200, quota = { allowed: true }
       return Response.json(next.body ?? next, { status: next.status ?? status });
     }
   });
+  // Every request names its lesson; tests that check this pass lessonId themselves.
   const invoke = (body, headers = {}) => handler(new Request('https://example.test/functions/v1/lesson-ai', {
-    method: 'POST', headers: { Origin: origin, Authorization: 'Bearer test-session', 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body)
+    method: 'POST', headers: { Origin: origin, Authorization: 'Bearer test-session', 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify('lessonId' in body ? body : { lessonId: LESSON, ...body })
   }));
   return { invoke, calls, reserved, settings };
 }
@@ -192,4 +197,46 @@ test('falls back to the next model when the first one is not available', async (
   const response = await f.invoke({ mode: 'ask', duration: 1500, segments, question: 'Hi' });
   assert.equal(response.status, 200);
   assert.deepEqual(f.calls.map((call) => call.url.split('/').at(-1)), GEMINI_MODELS.slice(0, 2).map((model) => `${model}:generateContent`));
+});
+
+test('only the lesson’s team can use the lesson AI, by role, before any quota is spent', async () => {
+  const analyze = { mode: 'analyze', videoId: 'ZK3O402wf1c', start: 0, end: 600 };
+  const outline = { mode: 'outline', duration: 1500, segments };
+  const ask = { mode: 'ask', duration: 1500, segments, question: 'Hi' };
+  const codeOf = async (f, body) => { const response = await f.invoke(body); return [response.status, (await response.json()).error?.code || 'OK']; };
+
+  const viewer = fixture({ access: { video_id: 'ZK3O402wf1c', role: 'viewer' } });
+  assert.deepEqual(await codeOf(viewer, analyze), [403, 'NOT_ALLOWED']);
+  assert.deepEqual(await codeOf(viewer, outline), [403, 'NOT_ALLOWED']);
+  assert.deepEqual(await codeOf(viewer, ask), [403, 'NOT_ALLOWED']);
+
+  const commenter = fixture({ access: { video_id: 'ZK3O402wf1c', role: 'commenter' } });
+  assert.deepEqual(await codeOf(commenter, analyze), [403, 'NOT_ALLOWED']);
+  assert.deepEqual(await codeOf(commenter, ask), [200, 'OK'], 'commenters can ask, like commenting');
+
+  for (const role of ['owner', 'admin', 'editor']) {
+    const member = fixture({ reply: gemini(JSON.stringify({ segments: [{ start: '0:05', text: 'x' }] })), access: { video_id: 'ZK3O402wf1c', role } });
+    assert.deepEqual(await codeOf(member, analyze), [200, 'OK'], role);
+  }
+
+  const outsider = fixture({ access: null });
+  assert.deepEqual(await codeOf(outsider, ask), [404, 'LESSON_NOT_FOUND']);
+  const otherLesson = fixture();
+  assert.deepEqual(await codeOf(otherLesson, { ...ask, lessonId: '00000000-0000-4000-8000-000000000000' }), [404, 'LESSON_NOT_FOUND']);
+
+  const otherVideo = fixture();
+  assert.deepEqual(await codeOf(otherVideo, { ...analyze, videoId: 'dQw4w9WgXcQ' }), [400, 'INVALID_REQUEST'], 'cannot spend quota on a different video');
+
+  const noLesson = fixture();
+  assert.deepEqual(await codeOf(noLesson, { lessonId: undefined, ...ask }), [400, 'INVALID_REQUEST']);
+  assert.deepEqual(await codeOf(noLesson, { ...ask, lessonId: 'not-a-uuid' }), [400, 'INVALID_REQUEST']);
+
+  const noSql = fixture({ access: new Error('missing function') });
+  assert.deepEqual(await codeOf(noSql, ask), [503, 'SETUP_REQUIRED']);
+
+  for (const f of [viewer, outsider, otherLesson, otherVideo, noLesson, noSql]) {
+    assert.deepEqual(f.reserved, [], 'no quota spent when refused');
+    assert.equal(f.calls.length, 0, 'Gemini not called when refused');
+  }
+  assert.equal(commenter.calls.length, 1, 'only the allowed question reached Gemini');
 });

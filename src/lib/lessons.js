@@ -106,20 +106,21 @@ export async function analyzeLesson(lesson, { duration, onProgress = () => {}, s
   for (const [index, part] of windows.entries()) {
     onProgress({ step: index + 1, steps: windows.length + 1, label: `Watching ${formatTime(part.start)}–${formatTime(part.end)}`, lesson: current });
     const label = `Watching ${formatTime(part.start)}–${formatTime(part.end)}`;
-    const result = await lessonAI({ mode: 'analyze', videoId: lesson.video_id, start: part.start, end: part.end }, signal,
+    const result = await lessonAI({ mode: 'analyze', lessonId: lesson.id, videoId: lesson.video_id, start: part.start, end: part.end }, signal,
       (pause) => onProgress({ step: index + 1, steps: windows.length + 1, label: `${label} (the free AI allowance is busy, retrying in ${pause}s)`, lesson: current }));
     segments = mergeSegments(segments, result.segments);
     await save({ segments, analyzed_seconds: part.end, duration_seconds: duration, status: 'analyzing' });
   }
   if (!segments.length) throw new Error('No spoken content was found in this video.');
   onProgress({ step: windows.length + 1, steps: windows.length + 1, label: 'Writing the summary and chapters', lesson: current });
-  const outline = await lessonAI({ mode: 'outline', title: current.title, duration, segments }, signal);
+  const outline = await lessonAI({ mode: 'outline', lessonId: lesson.id, title: current.title, duration, segments }, signal);
   return save({ summary: outline.summary, chapters: outline.chapters, key_points: outline.keyPoints, status: 'ready', duration_seconds: duration, analyzed_seconds: duration });
 }
 
 export async function askLesson(lesson, question, history = [], signal, onWait) {
   const result = await lessonAI({
     mode: 'ask',
+    lessonId: lesson.id,
     title: lesson.title,
     duration: lesson.duration_seconds,
     segments: lesson.segments,
