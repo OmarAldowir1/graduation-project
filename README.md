@@ -9,6 +9,7 @@ Everything is organised around **projects**. Each project has:
 - **Tasks**: a board with owners, due dates, checklists and a discussion on every task.
 - **Pages**: meeting notes, research and drafts that belong to the project.
 - **Meetings**: live team meetings with a timed agenda (see below).
+- **Lessons**: YouTube lectures with AI notes, chapters and a chat that answers with timestamps (see below).
 
 **Home** opens with a **What’s new** card: what changed since you last checked (tasks assigned to you, mentions, comments, pages teammates edited, tasks they finished, meetings that ended with decisions, live meetings, and new Team chat messages). Click *Mark all as seen* to clear it; it reappears when something new happens. It then shows your own tasks across all projects, project progress, and what your teammates did. A short checklist guides a new team through creating a project, inviting a teammate, assigning a task and starting a discussion.
 
@@ -32,6 +33,23 @@ Open a project's **Meetings** tab and click **New meeting**. Give it a title and
 - Ended meetings stay in the Meetings tab as read-only minutes.
 
 Meetings need [`sql/meetings.sql`](sql/meetings.sql) (see Supabase setup below).
+
+### YouTube lessons
+
+Open a project's **Lessons** tab, click **Add YouTube lesson** and paste the link of a public video (a lecture, tutorial or recorded class).
+
+- **Analyse once**: the AI watches the video in 10-minute parts and writes timestamped notes, then a summary, key points and chapters. Progress is saved after every part, so a stopped analysis continues where it left off. The result is stored for the whole team.
+- **Jump to the moment**: click any chapter, note or time in an answer and the embedded player jumps there.
+- **Search and ask**: search the notes, or use **Ask AI** for questions in your own words, such as “at what minute is recursion explained?”. Answers cite times from the notes and are shared with the team.
+- **Save as page**: turns the summary, chapters and notes into a project page with links back to the video.
+
+Lessons use Google Gemini, because it can read a public YouTube link directly; the rest of the AI stays on Cloudflare. Setup:
+
+1. Run [`sql/lessons.sql`](sql/lessons.sql) in the Supabase SQL Editor.
+2. Create a Gemini API key at [aistudio.google.com](https://aistudio.google.com) and add `GEMINI_API_KEY=…` to the ignored `supabase/functions/.env` file (local development). The key never reaches the browser.
+3. For a hosted deployment, set the same secret and deploy the function: `npx supabase secrets set GEMINI_API_KEY=… --project-ref YOUR_PROJECT_REF`, then `npx supabase functions deploy lesson-ai --project-ref YOUR_PROJECT_REF`.
+
+Limits: public videos only (not private, unlisted or age-restricted), up to 4 hours per video, and Google's free tier allows about 8 hours of YouTube video per day for the whole project. YouTube support in the Gemini API is a preview feature, so its limits may change.
 
 ### Brand & homepage
 
@@ -86,7 +104,7 @@ Copy `.env.example` to `.env` and add the Supabase project URL and anon key. The
 
 Then open the Supabase SQL Editor and run [`sql/schema.sql`](sql/schema.sql). This creates the workspace, page, task, comment, notification, invitation, and collaboration tables, policies, indexes, and triggers.
 
-For team features, also run [`sql/task-details.sql`](sql/task-details.sql), [`sql/team-chat.sql`](sql/team-chat.sql), [`sql/collaboration.sql`](sql/collaboration.sql), [`sql/projects.sql`](sql/projects.sql), [`sql/workspace-features.sql`](sql/workspace-features.sql), [`sql/meetings.sql`](sql/meetings.sql) and [`sql/catch-up.sql`](sql/catch-up.sql), in that order. `collaboration.sql` adds @mentions and targeted, throttled notifications; `projects.sql` enables projects; `workspace-features.sql` adds page history, public share links, team templates, custom task fields, page @mentions, daily due-date reminders, and lets every team member (not only the owner) see the team list; `meetings.sql` adds live meetings and their notes, with realtime updates; `catch-up.sql` syncs the Home “What’s new” card across devices and records who finished each task and when. Until they're applied, the app still works, but mentions aren't stored and creating a project shows a message asking for the update.
+For team features, also run [`sql/task-details.sql`](sql/task-details.sql), [`sql/team-chat.sql`](sql/team-chat.sql), [`sql/collaboration.sql`](sql/collaboration.sql), [`sql/projects.sql`](sql/projects.sql), [`sql/workspace-features.sql`](sql/workspace-features.sql), [`sql/meetings.sql`](sql/meetings.sql), [`sql/catch-up.sql`](sql/catch-up.sql) and [`sql/lessons.sql`](sql/lessons.sql), in that order. `collaboration.sql` adds @mentions and targeted, throttled notifications; `projects.sql` enables projects; `workspace-features.sql` adds page history, public share links, team templates, custom task fields, page @mentions, daily due-date reminders, and lets every team member (not only the owner) see the team list; `meetings.sql` adds live meetings and their notes, with realtime updates; `catch-up.sql` syncs the Home “What’s new” card across devices and records who finished each task and when; `lessons.sql` adds YouTube lessons, their shared questions, and usage limits for the lesson AI. Until they're applied, the app still works, but mentions aren't stored and creating a project shows a message asking for the update.
 
 The database cannot be accessed from the copied frontend alone unless you have access to the same Supabase project or the owner gives you the correct credentials. Never commit `.env` or service-role keys.
 

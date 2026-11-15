@@ -5,3 +5,6 @@ verify_jwt = true
 
 [functions.text-ai]
 verify_jwt = true
+
+[functions.lesson-ai]
+verify_jwt = true

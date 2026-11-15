@@ -13,6 +13,7 @@
     "test:collab": "node --test tests/collaboration.test.js tests/projects.test.js",
     "test:meetings": "node --test tests/meeting-ai.test.js",
     "test:catch-up": "node --test tests/catch-up.test.js",
+    "test:lessons": "node --test tests/lesson-ai.test.js",
     "preview": "vite preview",
     "check": "npm run lint && npm run build"
   },
