@@ -9,6 +9,7 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
+    "test": "node --test tests/*.test.js",
     "test:ai": "node --test tests/ai-blocks.test.js tests/page-ai-handler.test.js tests/text-ai-handler.test.js tests/agent.test.js",
     "test:collab": "node --test tests/collaboration.test.js tests/projects.test.js tests/team-tools.test.js",
     "preview": "vite preview",

@@ -18,4 +18,11 @@ export default defineConfig([
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
   },
+  {
+    // These run in Node (the Vite config, the local AI middleware and the tests), not the browser.
+    files: ['vite.config.js', 'server/**/*.js', 'tests/**/*.js'],
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+  },
 ])

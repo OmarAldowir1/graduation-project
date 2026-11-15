@@ -1,9 +1,7 @@
 export default function NotionAIFace({
   size = 28,
   className = '',
-  bg = 'bg-[#e5e5e4] dark:bg-[#343536]',
-  stroke = '#191919',
-  strokeDark = '#f5f5f4'
+  bg = 'bg-[#e5e5e4] dark:bg-[#343536]'
 }) {
   return (
     <div

@@ -667,9 +667,11 @@ export default function App() {
     });
     getWorkspaceMembers(workspaceId).then(({ data }) => setTeamSize(Math.max(1, (data || []).length)));
   }, []);
+  // Reload the sidebar when the team, the app data or the page changes.
+  const sidebarWorkspaceId = AppState.workspace?.id;
   useEffect(() => {
     refreshSidebarPages();
-  }, [AppState.workspace?.id, appVersion, route.raw, refreshSidebarPages]);
+  }, [sidebarWorkspaceId, appVersion, route.raw, refreshSidebarPages]);
   useEffect(() => {
     window.addEventListener('motion:pages-changed', refreshSidebarPages);
     return () => window.removeEventListener('motion:pages-changed', refreshSidebarPages);

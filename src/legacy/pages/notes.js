@@ -614,14 +614,6 @@ function applyNotesFilter(container, queryValue) {
   if (count) count.textContent = matchCount;
 }
 
-function getPageDepth(page, pages, seen = new Set()) {
-  if (!page?.parent_id || seen.has(page.id)) return 0;
-  const parent = pages.find((candidate) => candidate.id === page.parent_id);
-  if (!parent) return 0;
-  seen.add(page.id);
-  return 1 + getPageDepth(parent, pages, seen);
-}
-
 function isPageDescendant(candidateId, ancestorId, pages) {
   const byId = new Map(pages.map((page) => [page.id, page]));
   const seen = new Set();

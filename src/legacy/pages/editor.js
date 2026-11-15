@@ -255,7 +255,7 @@ export async function renderEditor(container, route) {
       container: canvasEl,
       initialHtml: contentHtml,
       onChange: () => debouncedSave(),
-      onAddComment: async ({ selectedText, content }) => {
+      onAddComment: async ({ content }) => {
         const { data: newComment, error } = await postComment(content);
         if (error) {
           showToast(`Could not post comment: ${error.message}`, 'error');
@@ -391,8 +391,6 @@ export async function renderEditor(container, route) {
     notionEditor?.openBlockMenuAtEnd();
   });
 
-  function decorateBlocks() { }
-
   const aiUndoKey = `motion-ai-undo:${page.id}`;
   const triggerAIPanel = (customPrompt = '') => {
     const plain = notionEditor ? notionEditor.quill.getText() : (titleEl?.textContent || '');
@@ -462,7 +460,6 @@ export async function renderEditor(container, route) {
   const blockMenu = container.querySelector('#editor-block-menu');
   const blockSearch = container.querySelector('#editor-block-search');
   let lastBlockEditor = container.querySelector('#editor-empty-area');
-  let blockRange = null;
   let selectedBlock = null;
 
   const closeBlockMenu = () => {
@@ -473,10 +470,6 @@ export async function renderEditor(container, route) {
 
   const openBlockMenu = (editor = lastBlockEditor) => {
     lastBlockEditor = editor || lastBlockEditor;
-    const selection = window.getSelection();
-    if (selection?.rangeCount && lastBlockEditor?.contains(selection.anchorNode)) {
-      blockRange = selection.getRangeAt(0).cloneRange();
-    }
     if (!blockMenu) return;
     blockMenu.hidden = false;
     if (blockSearch) {
@@ -631,7 +624,6 @@ export async function renderEditor(container, route) {
     const next = block.nextSibling;
     block.remove();
     selectedBlock = null;
-    blockRange = null;
     if (notionEditor?.quill) {
       notionEditor.quill.update();
     }

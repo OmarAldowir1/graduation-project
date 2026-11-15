@@ -1,4 +1,3 @@
-/* global process */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { withAuthDeadline } from '../src/lib/authRequest.js';

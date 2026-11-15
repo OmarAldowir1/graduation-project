@@ -1,5 +1,4 @@
 import { showToast } from '../legacy/app.js';
-import { updatePage } from './queries.js';
 
 let activeEditorInstance = null;
 const listeners = new Set();
@@ -47,7 +46,6 @@ export function markdownToEditorHtml(markdown) {
   let currentList = null;
   let inCodeBlock = false;
   let codeBuffer = [];
-  let codeLang = '';
   let inTable = false;
   let tableRows = [];
 
@@ -78,7 +76,6 @@ export function markdownToEditorHtml(markdown) {
       blocks.push(`<pre class="notion-code-block"><code>${code}</code></pre>`);
       codeBuffer = [];
       inCodeBlock = false;
-      codeLang = '';
     }
   }
 
@@ -94,7 +91,6 @@ export function markdownToEditorHtml(markdown) {
         flushList();
         flushTable();
         inCodeBlock = true;
-        codeLang = trimmed.slice(3).trim();
       }
       continue;
     }

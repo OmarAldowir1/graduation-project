@@ -6,6 +6,7 @@ import 'quill/dist/quill.core.css';
 // Teammates' cursors during live co-editing (see liveCollab.js).
 Quill.register('modules/cursors', QuillCursors, true);
 import { executeAIAction } from './editorAI.js';
+import { NOTION_COLORS } from './notionColors.js';
 import { createSlashMenu, attachMarkdownShortcuts, createBlockActionsMenu, ensureTrailingParagraph } from './blockMenus.js';
 
 // ============================================
@@ -49,7 +50,7 @@ class TableBlot extends BlockEmbed {
   static create(value) {
     const node = super.create();
     node.setAttribute('contenteditable', 'false');
-    let tableHtml = '';
+    let tableHtml;
     if (typeof value === 'string' && value.includes('<table')) {
       tableHtml = value;
     } else if (typeof value === 'object' && value?.html) {
@@ -198,32 +199,7 @@ Quill.register(ToggleBlot, true);
 // Notion Palette Colors
 // ============================================
 
-export const NOTION_COLORS = {
-  text: [
-    { label: 'Default', value: '' },
-    { label: 'Gray', value: '#787774' },
-    { label: 'Brown', value: '#9f6b53' },
-    { label: 'Orange', value: '#d9730d' },
-    { label: 'Yellow', value: '#cb912f' },
-    { label: 'Green', value: '#448361' },
-    { label: 'Blue', value: '#337ea9' },
-    { label: 'Purple', value: '#9065b0' },
-    { label: 'Pink', value: '#c14c8a' },
-    { label: 'Red', value: '#d44c47' }
-  ],
-  background: [
-    { label: 'Default', value: '' },
-    { label: 'Gray', value: 'rgba(120, 119, 116, 0.2)' },
-    { label: 'Brown', value: 'rgba(159, 107, 83, 0.2)' },
-    { label: 'Orange', value: 'rgba(217, 115, 13, 0.2)' },
-    { label: 'Yellow', value: 'rgba(203, 145, 47, 0.2)' },
-    { label: 'Green', value: 'rgba(68, 131, 97, 0.2)' },
-    { label: 'Blue', value: 'rgba(51, 126, 169, 0.2)' },
-    { label: 'Purple', value: 'rgba(144, 101, 176, 0.2)' },
-    { label: 'Pink', value: 'rgba(193, 76, 138, 0.2)' },
-    { label: 'Red', value: 'rgba(212, 76, 71, 0.2)' }
-  ]
-};
+export { NOTION_COLORS };
 
 // ============================================
 // Main Notion Editor Factory
