@@ -30,6 +30,7 @@ import { loadTeamTemplates } from './lib/pageTools.js';
 import { describeNotification } from './lib/notificationText.js';
 import Login, { PasswordReset } from './components/Login.jsx';
 import TeamChat from './components/TeamChat.jsx';
+import LessonView from './components/LessonView.jsx';
 import AIChatView from './components/AIChatView.jsx';
 import AIPageSidebar from './components/AIPageSidebar.jsx';
 import NotionAIFace from './components/NotionAIFace.jsx';
@@ -1822,6 +1823,8 @@ export default function App() {
               </div>
             ) : route.path === 'chat' ? (
               <TeamChat key={AppState.workspace?.id} workspace={AppState.workspace} user={AppState.user} />
+            ) : route.path === 'lesson' ? (
+              <LessonView key={route.segments[0] || 'none'} lessonId={route.segments[0]} user={AppState.user} />
             ) : route.path === 'ai-chat' ? (
               <AIChatView
                 key={AppState.workspace?.id}

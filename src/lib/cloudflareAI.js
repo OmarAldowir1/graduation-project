@@ -19,6 +19,7 @@ export async function invokeAI(functionName, body, signal) {
     if (!response.ok || !data || data.error) {
       const failure = new Error(data?.error?.message || 'AI is unavailable. Check the local free AI setup.');
       failure.code = data?.error?.code || 'SERVICE_UNAVAILABLE';
+      if (data?.error?.retryAfter) failure.retryAfter = data.error.retryAfter;
       throw failure;
     }
     return data;
@@ -30,6 +31,7 @@ export async function invokeAI(functionName, body, signal) {
     try { detail = await error.context?.json(); } catch { /* Network error. */ }
     const failure = new Error(detail?.error?.message || 'AI is unavailable. Check that the free AI setup is complete.');
     failure.code = detail?.error?.code || 'SERVICE_UNAVAILABLE';
+    if (detail?.error?.retryAfter) failure.retryAfter = detail.error.retryAfter;
     throw failure;
   }
   if (!data || data.error) {

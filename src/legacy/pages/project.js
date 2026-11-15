@@ -14,6 +14,7 @@ import { renderCheckinsTab } from './projectCheckins.js';
 import { getCheckins, weekStart, expectedPeople, blockersOf } from '../../lib/checkins.js';
 import { getProjectTeams, teamStats, TEAM_COLORS, workspaceRole } from '../../lib/teams.js';
 import { renderMilestonesCard, openMeetingAssistant, renderDecisionsTab, renderResources, renderWorkload } from './projectTools.js';
+import { LESSON_SETUP_MESSAGE, isMissingLessonsTable, listProjectLessons, createLesson, findLesson, parseYouTubeId, formatTime } from '../../lib/lessons.js';
 import { generateProjectReport } from '../../lib/projectReport.js';
 import { requestForm } from '../../lib/dialogs.js';
 import { loaderHtml } from '../../lib/loader.js';
@@ -25,7 +26,8 @@ const TABS = [
   { id: 'checkins', label: 'Check-ins', icon: 'event_note', hint: 'Weekly: what everyone did, what’s next, what’s blocking them' },
   { id: 'decisions', label: 'Decisions', icon: 'how_to_vote', hint: 'Quick polls and a log of what the team decided and why' },
   { id: 'tasks', label: 'Tasks', icon: 'view_kanban', hint: 'All tasks in this project as a board, list, calendar or timeline' },
-  { id: 'pages', label: 'Library', icon: 'local_library', hint: 'Pages, links and resources that belong to this project' }
+  { id: 'pages', label: 'Library', icon: 'local_library', hint: 'Pages, links and resources that belong to this project' },
+  { id: 'lessons', label: 'Lessons', icon: 'smart_display', hint: 'YouTube lectures turned into timestamped notes you can search and ask about' }
 ];
 
 function tabHref(projectId, tab) {
@@ -65,7 +67,7 @@ export function renderProjectBar({ project, activeTab, progress = null, members 
 
 export async function renderProject(container, route) {
   const projectId = route?.segments?.[0];
-  const tab = ['tasks', 'pages', 'teams', 'checkins', 'decisions'].includes(route?.segments?.[1]) ? route.segments[1] : 'overview';
+  const tab = ['tasks', 'pages', 'teams', 'checkins', 'decisions', 'lessons'].includes(route?.segments?.[1]) ? route.segments[1] : 'overview';
   const workspaceId = AppState.workspace?.id;
 
   const [pagesResult, tasksResult, membersResult, teamsResult] = await Promise.all([
@@ -111,6 +113,11 @@ export async function renderProject(container, route) {
   if (tab === 'decisions') {
     container.innerHTML = `<div class="project-view">${bar}<section class="project-section project-decisions"></section></div>`;
     await renderDecisionsTab(container.querySelector('.project-decisions'), { project, members, role, workspaceId });
+    return;
+  }
+
+  if (tab === 'lessons') {
+    await renderLessonsTab(container, { bar, project, workspaceId });
     return;
   }
 
@@ -281,4 +288,51 @@ export async function renderProject(container, route) {
     const task = tasks.find((item) => item.id === button.dataset.open);
     if (task) openTaskDetails(task, members, refresh, { teams });
   }));
+}
+
+// YouTube lessons (from feature/youtube-ai): list the project's lessons and add new ones.
+async function renderLessonsTab(container, { bar, project, workspaceId }) {
+  const { data: lessons, error } = await listProjectLessons(project.id);
+  const statusLabel = { ready: '<span class="meeting-status is-ended">Analysed</span>', analyzing: '<span class="meeting-status">Partly analysed</span>', new: '<span class="meeting-status">Not analysed</span>' };
+  const row = (lesson) => `<li><a href="#lesson/${escapeHtml(lesson.id)}">
+      <img class="lesson-thumb" src="https://i.ytimg.com/vi/${escapeHtml(lesson.video_id)}/mqdefault.jpg" alt="" loading="lazy" />
+      <span class="meeting-list-main"><strong>${escapeHtml(lesson.title || 'YouTube lesson')}</strong><small>${lesson.duration_seconds ? `${escapeHtml(formatTime(lesson.duration_seconds))} · ` : ''}Added ${escapeHtml(timeAgo(lesson.created_at))}</small></span>
+      ${statusLabel[lesson.status] || ''}
+    </a></li>`;
+  const body = error
+    ? `<div class="team-chat-error" role="alert">${escapeHtml(isMissingLessonsTable(error) ? LESSON_SETUP_MESSAGE : `Could not load lessons: ${error.message}`)}</div>`
+    : lessons.length
+      ? `<ul class="meeting-list lesson-list">${lessons.map(row).join('')}</ul>`
+      : `<div class="project-hint"><span class="material-symbols-outlined">smart_display</span><div><strong>No lessons yet</strong><p>Add a YouTube lecture or tutorial. The AI writes timestamped notes, a summary and chapters, and answers questions like “at what minute is this explained?”.</p></div></div>`;
+  container.innerHTML = `<div class="project-view">${bar}
+    <section class="project-section">
+      <div class="project-section-head"><h2>Lessons</h2>${error ? '' : '<button type="button" class="project-btn primary" data-new-lesson><span class="material-symbols-outlined">add</span> Add YouTube lesson</button>'}</div>
+      ${body}
+    </section></div>`;
+
+  container.querySelector('[data-new-lesson]')?.addEventListener('click', async () => {
+    const values = await requestForm({
+      title: 'Add YouTube lesson',
+      description: 'Paste the link of a public YouTube video.',
+      submitLabel: 'Add lesson',
+      fields: [
+        { name: 'url', label: 'YouTube link', required: true, placeholder: 'https://www.youtube.com/watch?v=…' },
+        { name: 'title', label: 'Title (optional)', maxLength: 200, placeholder: 'Taken from the video if left empty' }
+      ]
+    });
+    if (!values?.url) return;
+    const videoId = parseYouTubeId(values.url);
+    if (!videoId) return showToast('That does not look like a YouTube video link.', 'error');
+    const existing = await findLesson(project.id, videoId);
+    if (existing) {
+      showToast('This video is already a lesson in this project.', 'success');
+      window.location.hash = `lesson/${existing.id}`;
+      return;
+    }
+    const { data, error: createError } = await createLesson({ workspaceId, projectId: project.id, videoId, title: values.title.slice(0, 200), userId: AppState.user?.id });
+    if (createError) {
+      return showToast(isMissingLessonsTable(createError) ? LESSON_SETUP_MESSAGE : `Could not add the lesson: ${createError.message}`, 'error');
+    }
+    window.location.hash = `lesson/${data.id}`;
+  });
 }

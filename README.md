@@ -74,9 +74,28 @@ Copy `.env.example` to `.env` and add the Supabase project URL and anon key. The
 
 Then open the Supabase SQL Editor and run [`sql/schema.sql`](sql/schema.sql). This creates the workspace, page, task, comment, notification, invitation, and collaboration tables, policies, indexes, and triggers.
 
-For team features, also run [`sql/task-details.sql`](sql/task-details.sql), [`sql/team-chat.sql`](sql/team-chat.sql), [`sql/collaboration.sql`](sql/collaboration.sql), [`sql/projects.sql`](sql/projects.sql) and [`sql/workspace-features.sql`](sql/workspace-features.sql) and [`sql/project-teams.sql`](sql/project-teams.sql), [`sql/checkins.sql`](sql/checkins.sql), [`sql/checkin-blockers.sql`](sql/checkin-blockers.sql), [`sql/team-tools.sql`](sql/team-tools.sql) and [`sql/project-files.sql`](sql/project-files.sql), in that order. `collaboration.sql` adds @mentions and targeted, throttled notifications; `projects.sql` enables projects; `workspace-features.sql` adds page history, public share links, team templates, custom task fields, page @mentions, daily due-date reminders, and lets every team member (not only the owner) see the team list; `project-teams.sql` adds teams inside projects (leader, members, progress %) and the database rule that only a team's leader (or the team owner/admins) can edit that team's tasks, while the person assigned can update its status and progress. Until they're applied, the app still works, but mentions aren't stored and creating a project shows a message asking for the update.
+For team features, also run [`sql/task-details.sql`](sql/task-details.sql), [`sql/team-chat.sql`](sql/team-chat.sql), [`sql/collaboration.sql`](sql/collaboration.sql), [`sql/projects.sql`](sql/projects.sql) and [`sql/workspace-features.sql`](sql/workspace-features.sql) and [`sql/project-teams.sql`](sql/project-teams.sql), [`sql/checkins.sql`](sql/checkins.sql), [`sql/checkin-blockers.sql`](sql/checkin-blockers.sql), [`sql/team-tools.sql`](sql/team-tools.sql), [`sql/project-files.sql`](sql/project-files.sql) and [`sql/lessons.sql`](sql/lessons.sql), in that order. `collaboration.sql` adds @mentions and targeted, throttled notifications; `projects.sql` enables projects; `workspace-features.sql` adds page history, public share links, team templates, custom task fields, page @mentions, daily due-date reminders, and lets every team member (not only the owner) see the team list; `project-teams.sql` adds teams inside projects (leader, members, progress %) and the database rule that only a team's leader (or the team owner/admins) can edit that team's tasks, while the person assigned can update its status and progress. Until they're applied, the app still works, but mentions aren't stored and creating a project shows a message asking for the update.
 
 The database cannot be accessed from the copied frontend alone unless you have access to the same Supabase project or the owner gives you the correct credentials. Never commit `.env` or service-role keys.
+
+## YouTube lessons
+
+Open a project's **Lessons** tab, click **Add YouTube lesson** and paste the link of a public video (a lecture, tutorial or recorded class).
+
+- **Analyse once**: the AI watches the video in 10-minute parts and writes timestamped notes, then a summary, key points and chapters. Progress is saved after every part, so a stopped analysis continues where it left off. The result is stored for the whole team.
+- **Jump to the moment**: click any chapter, note or time in an answer and the embedded player jumps there.
+- **Search and ask**: search the notes, or use **Ask AI** for questions in your own words, such as “at what minute is recursion explained?”. Answers cite times from the notes and are shared with the team.
+- **Save as page**: turns the summary, chapters and notes into a project page with links back to the video.
+
+Lessons use Google Gemini, because it can read a public YouTube link directly; the rest of the AI stays on Cloudflare. Setup:
+
+1. Run [`sql/lessons.sql`](sql/lessons.sql) in the Supabase SQL Editor.
+2. Create a Gemini API key at [aistudio.google.com](https://aistudio.google.com) and add `GEMINI_API_KEY=…` to the ignored `supabase/functions/.env` file (local development), then restart the dev server. The key never reaches the browser.
+3. For a hosted deployment, set the same secret and deploy the function: `npx supabase secrets set GEMINI_API_KEY=… --project-ref YOUR_PROJECT_REF`, then `npx supabase functions deploy lesson-ai --project-ref YOUR_PROJECT_REF`.
+
+Limits: public videos only (not private, unlisted or age-restricted), up to 4 hours per video, and Google's free tier allows about 8 hours of YouTube video per day for the whole project. YouTube support in the Gemini API is a preview feature, so its limits may change.
+
+YouTube lessons were built by Eqbal on `feature/youtube-ai` and brought into the main project.
 
 ## Useful commands
 
@@ -110,6 +129,7 @@ To turn on the signed-in tests, run `npm run e2e:login` once and sign in yoursel
 - **Catch me up** (Home): what changed since you last looked: new tasks for you, blocked teammates, polls waiting for your vote, upcoming milestones, decisions and tasks teammates finished. **Got it** marks everything as read.
 
   Milestones, decisions, polls and resources need [`sql/team-tools.sql`](sql/team-tools.sql) (after `project-teams.sql`); members can see them, editors add them, and only the author or the team owner/admins can delete them.
+- **YouTube lessons** (Project → Lessons tab): paste a public YouTube link; the AI writes timestamped notes, a summary, key points and chapters, and answers questions with times you can click to jump the player there. See *YouTube lessons* below for setup.
 - **Focus Zone** (🎯 Focus in any task, or **Focus** in the sidebar and on Home): a calm full-screen timer (15/25/50 min) on one task with its checklist; pause, +5 min, minimize to a corner pill. Teammates see “focusing on … · 12 min left” live and can **Join** to finish at the same time. At the end you set how far you got, which updates the task’s progress. Non-error notifications are muted while you focus. No database table needed (it uses live presence).
 - **Progress report** (Project → Overview → Progress report): one click saves a report page with overall and per-team progress, work finished in the period, overdue and unowned tasks, what's due next and who did what. Groupify calculates every number; the AI only writes the short summary and next steps (optional).
 - **Teams inside projects** (Project → Teams tab): leaders, members, colour, per-team progress bars, leader-only editing enforced by the database, and AI actions that build a whole team plan (teams, leaders and their tasks) for you to approve.

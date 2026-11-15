@@ -2,6 +2,7 @@ import {readFileSync} from 'node:fs';
 import {fileURLToPath} from 'node:url';
 import {createPageAIHandler} from '../supabase/functions/cloudflare-page-ai/handler.js';
 import {createTextAIHandler} from '../supabase/functions/text-ai/handler.js';
+import {createLessonAIHandler} from '../supabase/functions/lesson-ai/handler.js';
 
 const secretFile = fileURLToPath(new URL('../supabase/functions/.env', import.meta.url));
 const loopback = new Set(['127.0.0.1', '::1', '::ffff:127.0.0.1']);
@@ -50,6 +51,13 @@ export function localAIPlugin(publicEnv) {
         if (!response.ok) throw new Error('AI quota storage unavailable');
         return response.json();
       };
+      const reserveLessonQuota = async (token, videoSeconds) => {
+        const response = await fetch(`${base}/rest/v1/rpc/reserve_lesson_ai_request`, {
+          method: 'POST', headers: headers(token), body: JSON.stringify({p_video_seconds: videoSeconds}), signal: AbortSignal.timeout(10000)
+        });
+        if (!response.ok) throw new Error('Lesson AI quota storage unavailable');
+        return response.json();
+      };
       const authorizePage = async (token, pageId) => {
         const response = await fetch(`${base}/rest/v1/pages?select=id&id=eq.${pageId}&limit=1`, {
           headers: headers(token), signal: AbortSignal.timeout(10000)
@@ -58,7 +66,8 @@ export function localAIPlugin(publicEnv) {
       };
       const handlers = {
         '/cloudflare-page-ai': createPageAIHandler({env, authenticate, reserveQuota, authorizePage}),
-        '/text-ai': createTextAIHandler({env, authenticate, reserveQuota})
+        '/text-ai': createTextAIHandler({env, authenticate, reserveQuota}),
+        '/lesson-ai': createLessonAIHandler({env, authenticate, reserveQuota: reserveLessonQuota})
       };
       server.middlewares.use('/__motion_ai', async (req, res, next) => {
         const handler = handlers[req.url?.split('?')[0]];
@@ -71,7 +80,9 @@ export function localAIPlugin(publicEnv) {
           let length = 0;
           for await (const chunk of req) {
             length += chunk.length;
-            if (length > 200000) return reply(res, 413, {error: {code: 'TOO_LARGE', message: 'AI request is too large.'}});
+            // Lesson notes for a long video are the largest body; every other AI route keeps the 200 KB cap.
+            const maxBytes = req.url?.split('?')[0] === '/lesson-ai' ? 1500000 : 200000;
+            if (length > maxBytes) return reply(res, 413, {error: {code: 'TOO_LARGE', message: 'AI request is too large.'}});
             chunks.push(chunk);
           }
           const request = new Request(`http://localhost${req.url}`, {
