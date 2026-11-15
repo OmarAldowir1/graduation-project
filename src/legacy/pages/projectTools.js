@@ -15,6 +15,7 @@ import {
   getDecisions, createDecision, deleteDecision,
   getPolls, createPoll, vote, removeVote, closePoll, deletePoll, pollResults,
   getResources, createResource, deleteResource, isSafeUrl,
+  uploadResourceFile, fileLink, checkUploadFile, formatBytes, fileIcon, FILE_ACCEPT,
   canManageItem, canAdd
 } from '../../lib/teamTools.js';
 
@@ -335,41 +336,156 @@ export async function renderDecisionsTab(section, ctx) {
 }
 
 // ---------------------------------------------------------------- Resources
+const hostOf = (url) => { try { return new URL(url).hostname; } catch { return ''; } };
+
+// Opens a private file in a new tab. The tab is opened right away (inside the click)
+// so browsers don't block it, then pointed at a 5-minute private link.
+async function openFile(resource, { download = false } = {}) {
+  const tab = download ? null : window.open('about:blank', '_blank');
+  if (tab) tab.opener = null;
+  const { url, error } = await fileLink(resource, { download });
+  if (error || !url) {
+    tab?.close();
+    showToast(`Could not open the file: ${error?.message || 'try again'}`, 'error');
+    return;
+  }
+  if (tab) { tab.location.href = url; return; }
+  const link = document.createElement('a');
+  link.href = url;
+  link.rel = 'noopener';
+  if (!download) link.target = '_blank';
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+function resourceCard(resource, { me, role }) {
+  const isFile = Boolean(resource.file_path);
+  const icon = isFile ? fileIcon(resource.file_name) : resource.url ? 'link' : 'sticky_note_2';
+  const heading = isFile
+    ? `<button type="button" class="resource-open" data-open-file="${e(resource.id)}" title="Open ${e(resource.file_name)}"><strong>${e(resource.title)}</strong></button><small class="resource-host">${e(resource.file_name)} · ${e(formatBytes(resource.file_size))}</small>`
+    : resource.url && isSafeUrl(resource.url)
+      ? `<a href="${e(resource.url)}" target="_blank" rel="noopener noreferrer"><strong>${e(resource.title)}</strong></a><small class="resource-host">${e(hostOf(resource.url))}</small>`
+      : `<strong>${e(resource.title)}</strong>`;
+  return `<article class="resource-card ${isFile ? 'is-file' : ''}">
+    <span class="material-symbols-outlined resource-icon" aria-hidden="true">${icon}</span>
+    <div class="resource-main">
+      ${heading}
+      ${resource.note ? `<p>${e(resource.note)}</p>` : ''}
+      <small>${resource.tag ? `<span class="resource-tag">${e(resource.tag)}</span> · ` : ''}${e(personName(resource.author))} · ${e(shortDate(resource.created_at))}</small>
+    </div>
+    <div class="resource-actions">
+      ${isFile ? `<button type="button" class="team-icon-btn" data-download-file="${e(resource.id)}" title="Download" aria-label="Download ${e(resource.file_name)}"><span class="material-symbols-outlined">download</span></button>` : ''}
+      ${canManageItem(resource, { userId: me, role }) ? `<button type="button" class="team-icon-btn" data-delete-resource="${e(resource.id)}" title="Delete" aria-label="Delete ${e(resource.title)}"><span class="material-symbols-outlined">delete</span></button>` : ''}
+    </div>
+  </article>`;
+}
+
 export async function renderResources(el, ctx) {
   const { project, role, workspaceId } = ctx;
   const me = AppState.user?.id;
-  const { data: resources, unavailable, error } = await getResources(project.id);
+  const { data: resources, unavailable, error, filesEnabled } = await getResources(project.id);
   if (!el.isConnected) return;
   if (unavailable) { el.innerHTML = `<div class="project-section-head"><h2>Resources</h2></div>${unavailableHint}`; return; }
   if (error) { el.innerHTML = `<p class="tools-error">${e(error.message)}</p>`; return; }
   const editable = canAdd(role);
+  const canUpload = editable && filesEnabled;
   const tags = [...new Set(resources.map((resource) => resource.tag).filter(Boolean))].sort();
   const active = el.__tag && tags.includes(el.__tag) ? el.__tag : '';
   const shown = active ? resources.filter((resource) => resource.tag === active) : resources;
   el.innerHTML = `
     <div class="project-section-head">
-      <div><h2>Resources</h2><p class="team-intro">Links, references and notes the team needs, in one place.</p></div>
-      ${editable ? '<button type="button" class="project-btn primary" data-add-resource><span class="material-symbols-outlined">add_link</span> Add resource</button>' : ''}
+      <div><h2>Resources</h2><p class="team-intro">Files, links and notes the team needs, in one place.${canUpload ? ' Drop files here to upload them.' : ''}</p></div>
+      ${editable ? `<div class="project-head-actions">
+        ${canUpload ? '<button type="button" class="project-btn primary" data-upload-file><span class="material-symbols-outlined">upload_file</span> Upload file</button>' : ''}
+        <button type="button" class="project-btn ${canUpload ? '' : 'primary'}" data-add-resource><span class="material-symbols-outlined">add_link</span> Add link</button>
+      </div>` : ''}
     </div>
+    ${canUpload ? `<input type="file" data-file-input accept="${e(FILE_ACCEPT)}" multiple hidden />` : ''}
+    <p class="resource-status" role="status" aria-live="polite" hidden></p>
+    ${editable && !filesEnabled ? '<p class="tools-empty">File uploads need <code>sql/project-files.sql</code> in Supabase. Links work already.</p>' : ''}
     ${tags.length ? `<div class="resource-tags" role="group" aria-label="Filter by topic"><button type="button" data-tag="" aria-pressed="${!active}">All (${resources.length})</button>${tags.map((tag) => `<button type="button" data-tag="${e(tag)}" aria-pressed="${active === tag}">${e(tag)}</button>`).join('')}</div>` : ''}
-    ${shown.length ? `<div class="resource-grid">${shown.map((resource) => `<article class="resource-card">
-      <span class="material-symbols-outlined resource-icon" aria-hidden="true">${resource.url ? 'link' : 'sticky_note_2'}</span>
-      <div class="resource-main">
-        ${resource.url && isSafeUrl(resource.url) ? `<a href="${e(resource.url)}" target="_blank" rel="noopener noreferrer"><strong>${e(resource.title)}</strong></a><small class="resource-host">${e((() => { try { return new URL(resource.url).hostname; } catch { return ''; } })())}</small>` : `<strong>${e(resource.title)}</strong>`}
-        ${resource.note ? `<p>${e(resource.note)}</p>` : ''}
-        <small>${resource.tag ? `<span class="resource-tag">${e(resource.tag)}</span> · ` : ''}${e(personName(resource.author))} · ${e(shortDate(resource.created_at))}</small>
-      </div>
-      ${canManageItem(resource, { userId: me, role }) ? `<button type="button" class="team-icon-btn" data-delete-resource="${e(resource.id)}" title="Delete" aria-label="Delete ${e(resource.title)}"><span class="material-symbols-outlined">delete</span></button>` : ''}
-    </article>`).join('')}</div>` : `<p class="tools-empty">${editable ? 'Add the brief, useful links, papers, designs or tools your team uses.' : 'No resources yet.'}</p>`}`;
+    ${shown.length ? `<div class="resource-grid">${shown.map((resource) => resourceCard(resource, { me, role })).join('')}</div>` : `<p class="tools-empty">${editable ? `Add the brief, ${canUpload ? 'slides, reports, ' : ''}useful links, papers, designs or tools your team uses.` : 'No resources yet.'}</p>`}`;
 
   const rerender = () => renderResources(el, ctx);
+  const byId = (id) => resources.find((resource) => resource.id === id);
+  const status = el.querySelector('.resource-status');
+  const setStatus = (text) => { status.hidden = !text; status.textContent = text; };
+
   el.querySelectorAll('[data-tag]').forEach((button) => button.addEventListener('click', () => { el.__tag = button.dataset.tag; rerender(); }));
+
+  // ---- Upload: one file gets a short form (name, topic, note); several upload straight away.
+  let uploading = false;
+  async function uploadFiles(fileList) {
+    const files = [...(fileList || [])];
+    if (!files.length || uploading) return;
+    const problems = files.map((file) => ({ file, check: checkUploadFile(file) })).filter((item) => !item.check.ok);
+    if (problems.length === files.length) return showToast(problems[0].check.error, 'error');
+    if (problems.length) showToast(`Skipped ${problems.map((item) => item.file.name).join(', ')}: ${problems[0].check.error}`, 'error');
+    const good = files.filter((file) => checkUploadFile(file).ok);
+    let details = { title: '', tag: active, note: '' };
+    if (good.length === 1) {
+      const values = await requestForm({
+        title: 'Upload a file',
+        description: `${good[0].name} · ${formatBytes(good[0].size)}. Only your team can open it.`,
+        submitLabel: 'Upload',
+        fields: [
+          { name: 'title', label: 'Name', required: true, value: good[0].name.replace(/\.[^.]+$/, ''), maxLength: 200 },
+          { name: 'tag', label: 'Topic (optional)', placeholder: 'e.g. Research, Design, Reports', maxLength: 40, value: active, half: true },
+          { name: 'note', label: 'Note (optional)', type: 'textarea', placeholder: 'What it is, or why it’s useful' }
+        ]
+      });
+      if (!values?.title) return;
+      details = values;
+    }
+    uploading = true;
+    const buttons = el.querySelectorAll('[data-upload-file], [data-add-resource]');
+    buttons.forEach((button) => { button.disabled = true; });
+    let done = 0;
+    const failed = [];
+    for (const [index, file] of good.entries()) {
+      setStatus(`Uploading ${file.name}${good.length > 1 ? ` (${index + 1} of ${good.length})` : ''}…`);
+      const { error: uploadError } = await uploadResourceFile({
+        workspaceId, projectId: project.id, userId: me, file,
+        title: good.length === 1 ? details.title : file.name.replace(/\.[^.]+$/, ''),
+        tag: details.tag, note: good.length === 1 ? details.note : ''
+      });
+      if (uploadError) failed.push(`${file.name}: ${uploadError.message}`);
+      else done += 1;
+    }
+    uploading = false;
+    setStatus('');
+    if (failed.length) showToast(`Could not upload ${failed.join('; ')}`, 'error');
+    if (done) showToast(done === 1 ? 'File uploaded' : `${done} files uploaded`, 'success');
+    if (el.isConnected) rerender();
+  }
+
+  const input = el.querySelector('[data-file-input]');
+  el.querySelector('[data-upload-file]')?.addEventListener('click', () => input?.click());
+  input?.addEventListener('change', () => { const files = [...input.files]; input.value = ''; uploadFiles(files); });
+  el.__upload = canUpload ? uploadFiles : null;
+  if (canUpload && !el.__dropReady) {
+    el.__dropReady = true;
+    const hasFiles = (event) => [...(event.dataTransfer?.types || [])].includes('Files');
+    el.addEventListener('dragover', (event) => { if (!hasFiles(event) || !el.__upload) return; event.preventDefault(); el.classList.add('is-dropping'); });
+    el.addEventListener('dragleave', (event) => { if (!el.contains(event.relatedTarget)) el.classList.remove('is-dropping'); });
+    el.addEventListener('drop', (event) => {
+      if (!hasFiles(event) || !el.__upload) return;
+      event.preventDefault();
+      el.classList.remove('is-dropping');
+      el.__upload(event.dataTransfer.files);
+    });
+  }
+
+  el.querySelectorAll('[data-open-file]').forEach((button) => button.addEventListener('click', () => openFile(byId(button.dataset.openFile))));
+  el.querySelectorAll('[data-download-file]').forEach((button) => button.addEventListener('click', () => openFile(byId(button.dataset.downloadFile), { download: true })));
+
   el.querySelector('[data-add-resource]')?.addEventListener('click', async () => {
     const values = await requestForm({
-      title: 'Add a resource',
+      title: 'Add a link',
       submitLabel: 'Add',
       fields: [
-        { name: 'title', label: 'Name', required: true, placeholder: 'e.g. Campus map (PDF)', maxLength: 200 },
+        { name: 'title', label: 'Name', required: true, placeholder: 'e.g. Campus map', maxLength: 200 },
         { name: 'url', label: 'Link (optional)', placeholder: 'https://…' },
         { name: 'tag', label: 'Topic (optional)', placeholder: 'e.g. Research, Design, Tools', maxLength: 40, value: active, half: true },
         { name: 'note', label: 'Note (optional)', type: 'textarea', placeholder: 'Why it’s useful' }
@@ -383,9 +499,11 @@ export async function renderResources(el, ctx) {
     rerender();
   });
   el.querySelectorAll('[data-delete-resource]').forEach((button) => button.addEventListener('click', async () => {
-    if (!await requestConfirmation('Delete this resource?')) return;
-    const { error: deleteError } = await deleteResource(button.dataset.deleteResource);
+    const resource = byId(button.dataset.deleteResource);
+    if (!await requestConfirmation(resource.file_path ? `Delete “${resource.title}”? The file is removed for everyone.` : 'Delete this resource?')) return;
+    const { error: deleteError } = await deleteResource(resource);
     if (deleteError) return showToast(`Could not delete it: ${deleteError.message}`, 'error');
+    showToast('Deleted', 'success');
     rerender();
   }));
 }

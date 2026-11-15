@@ -1085,3 +1085,11 @@ html.dark .help-step-n { background: var(--g-blue); }
   .workload-flag { display: none; }
   .home-catchup-head { flex-wrap: wrap; }
 }
+
+/* Library file uploads */
+.project-resources.is-dropping { outline: 2px dashed var(--primary); outline-offset: -6px; background: color-mix(in srgb, var(--primary) 5%, transparent); }
+.resource-status { margin: 8px 0 0; font-size: 13px; color: var(--primary); }
+.resource-status[hidden] { display: none; }
+.resource-open { border: 0; background: none; padding: 0; font: inherit; color: var(--on-surface); text-align: left; cursor: pointer; }
+.resource-open:hover strong { text-decoration: underline; color: var(--primary); }
+.resource-actions { display: flex; flex-direction: column; gap: 2px; }

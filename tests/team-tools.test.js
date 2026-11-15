@@ -78,3 +78,25 @@ test('catch me up: only what changed since the last visit, and only what others 
   assert.deepEqual(byKind.finished.items.map((item) => item.text), ['Sara finished · Capstone']);
   assert.deepEqual(catchUpItems({ me: 'me', since, tasks: [], updates: {} }), []);
 });
+
+test('library uploads: allowed types, size limit and safe names', async () => {
+  const { checkUploadFile, safeFileName, formatBytes, fileIcon, MAX_FILE_BYTES } = await import('../src/lib/teamToolsLogic.js');
+  assert.deepEqual(checkUploadFile({ name: 'Report.PDF', size: 1000 }), { ok: true, type: 'application/pdf' });
+  assert.equal(checkUploadFile({ name: 'slides.pptx', size: 5 }).type, 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+  assert.equal(checkUploadFile({ name: 'notes.md', size: 5, type: '' }).type, 'text/markdown');
+  assert.equal(checkUploadFile({ name: 'page.html', size: 5 }).ok, false);
+  assert.equal(checkUploadFile({ name: 'logo.svg', size: 5 }).ok, false);
+  assert.equal(checkUploadFile({ name: 'run.exe', size: 5 }).ok, false);
+  assert.equal(checkUploadFile({ name: 'big.pdf', size: MAX_FILE_BYTES + 1 }).ok, false);
+  assert.equal(checkUploadFile({ name: 'empty.pdf', size: 0 }).ok, false);
+  assert.equal(checkUploadFile(null).ok, false);
+  assert.equal(safeFileName('Final Report (v2).pdf'), 'Final-Report-v2.pdf');
+  assert.equal(safeFileName('../../etc/passwd'), 'passwd');
+  assert.equal(safeFileName('C:\\Users\\me\\plan.docx'), 'plan.docx');
+  assert.equal(safeFileName('تقرير.docx'), 'file.docx');
+  assert.equal(formatBytes(512), '512 B');
+  assert.equal(formatBytes(2048), '2 KB');
+  assert.equal(formatBytes(1.5 * 1024 * 1024), '1.5 MB');
+  assert.equal(fileIcon('a.xlsx'), 'table_chart');
+  assert.equal(fileIcon('a.png'), 'image');
+});

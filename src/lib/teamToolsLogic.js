@@ -86,3 +86,56 @@ export function catchUpItems({ tasks = [], updates = {}, me, since, today = toda
       .map((task) => ({ text: `${task.title}${where(projectOf(task))}`, href: taskHref(task) })), 'good');
   return groups;
 }
+
+// ---------- Library file uploads (mirrors the bucket rules in sql/project-files.sql) ----------
+export const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const FILE_TYPES = {
+  pdf: 'application/pdf',
+  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif',
+  txt: 'text/plain', csv: 'text/csv', md: 'text/markdown',
+  doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  zip: 'application/zip'
+};
+export const FILE_ACCEPT = Object.keys(FILE_TYPES).map((ext) => `.${ext}`).join(',');
+
+function extensionOf(name = '') {
+  const match = /\.([a-z0-9]{1,8})$/i.exec(String(name));
+  return match ? match[1].toLowerCase() : '';
+}
+
+// Returns { ok, type, error }: the content type to store, or why the file can't be uploaded.
+export function checkUploadFile(file) {
+  if (!file) return { ok: false, error: 'Choose a file first.' };
+  if (!file.size) return { ok: false, error: 'This file is empty.' };
+  if (file.size > MAX_FILE_BYTES) return { ok: false, error: `Files can be up to 25 MB (this one is ${formatBytes(file.size)}).` };
+  const type = FILE_TYPES[extensionOf(file.name)];
+  if (!type) return { ok: false, error: 'This file type isn’t supported. Use PDF, Word, Excel, PowerPoint, images, text, CSV or ZIP.' };
+  return { ok: true, type };
+}
+
+// A storage-safe name that keeps the extension: "Final Report (v2).pdf" → "Final-Report-v2.pdf".
+export function safeFileName(name = 'file') {
+  const last = String(name).split(/[\\/]/).pop();
+  const ext = extensionOf(last);
+  const base = last.replace(/\.[^.]*$/, '').normalize('NFKD').replace(/[^\w-]+/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 80) || 'file';
+  return ext ? `${base}.${ext}` : base;
+}
+
+export function formatBytes(bytes = 0) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+// Icon for a file in the Library.
+export function fileIcon(name = '') {
+  const ext = extensionOf(name);
+  if (ext === 'pdf') return 'picture_as_pdf';
+  if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
+  if (['xls', 'xlsx', 'csv'].includes(ext)) return 'table_chart';
+  if (['ppt', 'pptx'].includes(ext)) return 'slideshow';
+  if (ext === 'zip') return 'folder_zip';
+  return 'description';
+}

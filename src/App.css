@@ -3546,6 +3546,17 @@ html.dark .notion-ai-new-btn:hover {
 .sidebar-footer { margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--outline-variant); display: flex; flex-direction: column; gap: 1px; }
 .sidebar-invite { margin-left: auto; padding: 0.05rem 0.45rem; border-radius: 999px; border: 1px solid var(--outline-variant); font-size: 0.68rem; font-weight: 600; color: var(--primary); }
 .motion-sidebar .notion-ai-sidebar { flex: 0 1 auto; max-height: 40vh; overflow-y: auto; margin-bottom: 0.25rem; }
+/* In Ask AI, the chat history gets the room; projects and notes shrink to a small scroll area. */
+.motion-sidebar.is-ai-chat .notion-ai-sidebar { flex: 1 1 auto; max-height: none; min-height: 10rem; overflow: hidden; }
+.motion-sidebar.is-ai-chat .notion-ai-section-title { margin-bottom: 0.4rem; }
+.motion-sidebar.is-ai-chat .notion-ai-agents-row { gap: 0.4rem; margin-bottom: 0.6rem; }
+.motion-sidebar.is-ai-chat .notion-ai-agent-chip { flex-direction: row; gap: 0.45rem; padding: 0.2rem 0.55rem 0.2rem 0.2rem; border-radius: 999px; font-size: 0.78rem; }
+.motion-sidebar.is-ai-chat .notion-ai-agent-chip > span { white-space: nowrap; }
+.motion-sidebar.is-ai-chat .notion-ai-avatar-circle, .motion-sidebar.is-ai-chat .notion-ai-add-circle { flex: none; width: 26px; height: 26px; }
+.motion-sidebar.is-ai-chat .notion-ai-avatar-circle .material-symbols-outlined, .motion-sidebar.is-ai-chat .notion-ai-add-circle .material-symbols-outlined { font-size: 16px; }
+.motion-sidebar.is-ai-chat .notion-ai-chat-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin-bottom: 0.25rem; }
+.motion-sidebar.is-ai-chat .sidebar-scroll { flex: 0 8 auto; min-height: 4.75rem; max-height: 18vh; border-top: 1px solid var(--outline-variant); padding-top: 0.25rem; }
+.motion-sidebar.is-ai-chat .sidebar-scroll .sidebar-section:first-child { margin-top: 0.4rem; }
 
 /* ============================================
    Project view

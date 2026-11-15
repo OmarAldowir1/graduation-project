@@ -1119,6 +1119,8 @@ export default function App() {
         }
 
         AppState.user = session.user;
+        // Chats are stored per person: load this person's list now that we know who it is.
+        setAiChats(getStoredChats());
 
         const [{ data: profile }, { data: workspaces }, { data: settings }] = await Promise.all([
           getUserProfile(session.user.id),
@@ -1165,6 +1167,7 @@ export default function App() {
     const { data } = isSupabaseConfigured ? onAuthStateChange((event, session) => {
       if (event === 'SIGNED_OUT') {
         AppState.user = null;
+        setAiChats([]);
         AppState.profile = null;
         AppState.workspaces = [];
         AppState.workspace = null;
@@ -1285,7 +1288,7 @@ export default function App() {
         onTouchStart={onSidebarTouchStart}
         onTouchEnd={onSidebarTouchEnd}
         aria-label="Workspace navigation"
-        className={`motion-sidebar h-screen w-64 flex-shrink-0 flex flex-col py-6 px-4 ${sidebarOpen ? 'sidebar-open' : ''}`}
+        className={`motion-sidebar h-screen w-64 flex-shrink-0 flex flex-col py-6 px-4 ${sidebarOpen ? 'sidebar-open' : ''} ${route.path === 'ai-chat' ? 'is-ai-chat' : ''}`}
       >
         <button
           type="button"

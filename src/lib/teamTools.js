@@ -2,9 +2,11 @@
 // resources. Tables and permission rules: sql/team-tools.sql.
 import { supabase } from './supabase.js';
 import { cachedRead, invalidateQueryCache } from './queries.js';
-import { pollResults, isSafeUrl } from './teamToolsLogic.js';
+import { pollResults, isSafeUrl, checkUploadFile, safeFileName } from './teamToolsLogic.js';
 
-export { todayKey, deadlineHealth, pollResults, isSafeUrl, canManageItem, canAdd, catchUpItems } from './teamToolsLogic.js';
+export { todayKey, deadlineHealth, pollResults, isSafeUrl, canManageItem, canAdd, catchUpItems, checkUploadFile, formatBytes, fileIcon, FILE_ACCEPT } from './teamToolsLogic.js';
+
+const FILES_BUCKET = 'project-files';
 
 function isMissingTable(error) {
   return Boolean(error) && (error.code === '42P01' || error.code === 'PGRST205' || /project_(milestones|decisions|polls|poll_votes|resources)/.test(error.message || ''));
@@ -106,8 +108,21 @@ export async function deletePoll(id) {
 }
 
 // ---------- Resources ----------
+const RESOURCE_FIELDS = 'id, workspace_id, project_id, title, url, note, tag, created_by, created_at, author:users!created_by(id, name, email)';
+
+// Files need sql/project-files.sql. Until it runs, links still work and uploads are off.
 export function getResources(projectId) {
-  return list('project_resources', projectId, 'id, workspace_id, project_id, title, url, note, tag, created_by, created_at, author:users!created_by(id, name, email)', { column: 'created_at', ascending: false });
+  return cachedRead(`teamtools:project_resources:${projectId}`, async () => {
+    const query = (fields) => supabase.from('project_resources').select(fields).eq('project_id', projectId).order('created_at', { ascending: false });
+    let { data, error } = await query(`${RESOURCE_FIELDS}, file_path, file_name, file_size, file_type`);
+    let filesEnabled = true;
+    if (error && (error.code === '42703' || /file_(path|name|size|type)/.test(error.message || ''))) {
+      filesEnabled = false;
+      ({ data, error } = await query(RESOURCE_FIELDS));
+    }
+    if (isMissingTable(error)) return { data: [], error: null, unavailable: true, filesEnabled: false };
+    return { data: data || [], error, filesEnabled };
+  });
 }
 
 export async function createResource({ workspaceId, projectId, title, url = '', note = '', tag = '' }) {
@@ -117,9 +132,45 @@ export async function createResource({ workspaceId, projectId, title, url = '', 
   return supabase.from('project_resources').insert({ workspace_id: workspaceId, project_id: projectId, title: String(title).trim().slice(0, 200), url: cleanUrl, note: String(note || '').trim().slice(0, 1000), tag: String(tag || '').trim().slice(0, 40) }).select('id').single();
 }
 
-export async function deleteResource(id) {
+// Upload a file to the project's private folder, then list it in the Library.
+// If listing fails, the uploaded file is removed again so nothing is left behind.
+export async function uploadResourceFile({ workspaceId, projectId, userId, file, title = '', note = '', tag = '' }) {
+  const check = checkUploadFile(file);
+  if (!check.ok) return { error: { message: check.error } };
   changed();
-  return supabase.from('project_resources').delete().eq('id', id);
+  const path = `${workspaceId}/${projectId}/${userId}/${crypto.randomUUID()}-${safeFileName(file.name)}`;
+  const { error: uploadError } = await supabase.storage.from(FILES_BUCKET).upload(path, file, { contentType: check.type, upsert: false });
+  if (uploadError) return { error: uploadError };
+  const result = await supabase.from('project_resources').insert({
+    workspace_id: workspaceId,
+    project_id: projectId,
+    title: String(title || file.name).trim().slice(0, 200),
+    note: String(note || '').trim().slice(0, 1000),
+    tag: String(tag || '').trim().slice(0, 40),
+    url: '',
+    file_path: path,
+    file_name: String(file.name).slice(0, 200),
+    file_size: file.size,
+    file_type: check.type
+  }).select('id').single();
+  if (result.error) await supabase.storage.from(FILES_BUCKET).remove([path]);
+  return result;
+}
+
+// A short-lived private link (5 minutes) to open or download a file.
+export async function fileLink(resource, { download = false } = {}) {
+  const { data, error } = await supabase.storage.from(FILES_BUCKET).createSignedUrl(resource.file_path, 300, download ? { download: resource.file_name || true } : undefined);
+  return { url: data?.signedUrl || '', error };
+}
+
+export async function deleteResource(resource) {
+  changed();
+  const { data, error } = await supabase.from('project_resources').delete().eq('id', resource.id).select('id');
+  if (error) return { error };
+  if (!data?.length) return { error: { message: 'Only the person who added this, or the team owner/admins, can delete it.' } };
+  if (!resource.file_path) return { error: null };
+  const { error: removeError } = await supabase.storage.from(FILES_BUCKET).remove([resource.file_path]);
+  return { error: null, fileError: removeError };
 }
 
 // ---------- Catch me up (whole workspace, since a moment in time) ----------

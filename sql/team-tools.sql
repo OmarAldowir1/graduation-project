@@ -94,6 +94,9 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'This must belong to a project in the same team';
   END IF;
+  IF TG_OP = 'INSERT' AND auth.uid() IS NOT NULL THEN
+    NEW.created_by := auth.uid();
+  END IF;
   IF TG_OP = 'UPDATE' THEN
     NEW.workspace_id := OLD.workspace_id;
     NEW.project_id := OLD.project_id;
