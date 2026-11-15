@@ -1228,3 +1228,12 @@ html.dark .lesson-time-chip:hover, html.dark .lesson-time:hover, html.dark butto
 .project-subtabs a .material-symbols-outlined { font-size: 16px; }
 .project-subtabs a:hover { border-color: var(--primary); color: var(--on-surface); }
 .project-subtabs a.is-active { background: var(--primary-container); border-color: var(--primary); color: var(--on-primary-container); }
+
+/* Password field with a show/hide eye (sign-in, sign-up, new password) */
+.auth-password { position: relative; }
+.auth-password .auth-password-input { padding-right: 46px !important; }
+.auth-password-eye { position: absolute; top: 50%; right: 6px; transform: translateY(-50%); width: 34px; height: 34px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--on-surface-variant, #5f6b72); cursor: pointer; }
+.auth-password-eye:hover { background: rgba(0, 0, 0, 0.06); color: var(--on-surface, #022635); }
+.auth-password-eye:focus-visible { outline: 2px solid var(--primary, #2E7CA9); outline-offset: 1px; }
+.auth-password-eye:disabled { opacity: .5; cursor: default; }
+.auth-password-eye .material-symbols-outlined { font-size: 20px; }

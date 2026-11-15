@@ -27,6 +27,21 @@ test('the sign-in page has email, password, sign up and password reset', async (
   await expect(page.getByRole('button', { name: 'Forgot your password?' })).toBeVisible();
 });
 
+test('the eye button shows and hides the password before signing in', async ({ page }) => {
+  await page.goto('/#login');
+  const password = page.getByLabel('Password', { exact: true });
+  await password.fill('my-test-value-123');
+  await expect(password).toHaveAttribute('type', 'password');
+  const eye = page.getByRole('button', { name: 'Show password' });
+  await eye.click();
+  await expect(password).toHaveAttribute('type', 'text');
+  await expect(password).toHaveValue('my-test-value-123');
+  await page.getByRole('button', { name: 'Hide password' }).click();
+  await expect(password).toHaveAttribute('type', 'password');
+  // The eye is a plain button: clicking it never submits the form.
+  await expect(page).toHaveURL(/#login$/);
+});
+
 for (const link of ['#kanban', '#settings', '#project/00000000-0000-0000-0000-000000000000', '#editor/00000000-0000-0000-0000-000000000000']) {
   test(`opening a private link (${link}) while signed out asks you to sign in`, async ({ page }) => {
     await page.goto(`/${link}`);

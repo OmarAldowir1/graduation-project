@@ -1,5 +1,26 @@
 import { useEffect, useMemo, useState } from 'react';
 import GroupifyLogo from './GroupifyLogo.jsx';
+
+// A password field with an eye button to show or hide what was typed.
+function PasswordInput({ className = '', ...props }) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div className="auth-password">
+      <input {...props} type={visible ? 'text' : 'password'} className={`${className} auth-password-input`} autoComplete={props.autoComplete || 'current-password'} />
+      <button
+        type="button"
+        className="auth-password-eye"
+        onClick={() => setVisible((value) => !value)}
+        aria-label={visible ? 'Hide password' : 'Show password'}
+        aria-pressed={visible}
+        title={visible ? 'Hide password' : 'Show password'}
+        disabled={props.disabled}
+      >
+        <span className="material-symbols-outlined" aria-hidden="true">{visible ? 'visibility_off' : 'visibility'}</span>
+      </button>
+    </div>
+  );
+}
 import { isSupabaseConfigured, SUPABASE_URL } from '../lib/config.js';
 import { getSession, sendPasswordReset, signIn, signInWithGoogle, signUp, updatePassword } from '../lib/supabase.js';
 import { showToast } from '../legacy/app.js';
@@ -195,15 +216,16 @@ export default function Login({ isBootstrapping }) {
 
             {mode !== 'reset' ? <div className="space-y-1.5">
               <label className="block text-xs font-semibold tracking-wider text-on-surface-variant uppercase pl-1">Password</label>
-              <input
+              <PasswordInput
                 className="w-full px-4 py-3 bg-surface-container rounded-lg border-none focus:ring-1 focus:ring-primary focus:bg-surface-container-lowest transition-all duration-200 text-on-surface placeholder:text-outline text-sm"
                 value={password}
                 disabled={loading}
                 onChange={(e) => setPassword(e.target.value)}
                 required
-                type="password"
                 placeholder="••••••••"
                 minLength={6}
+                aria-label="Password"
+                autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
               />
             </div> : null}
 
@@ -298,8 +320,8 @@ export function PasswordReset() {
           {error ? <div className="mb-4 p-3 rounded-lg bg-error-container/20 text-on-error-container text-sm">{error}</div> : null}
           {message ? <div className="mb-4 p-3 rounded-lg bg-primary-container/30 text-on-primary-container text-sm">{message}</div> : null}
           <form className="space-y-4" onSubmit={handleSubmit}>
-            <input className="w-full px-4 py-3 bg-surface-container rounded-lg border-none text-on-surface" type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="New password" minLength={6} required />
-            <input className="w-full px-4 py-3 bg-surface-container rounded-lg border-none text-on-surface" type="password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="Confirm new password" minLength={6} required />
+            <PasswordInput className="w-full px-4 py-3 bg-surface-container rounded-lg border-none text-on-surface" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="New password" aria-label="New password" autoComplete="new-password" minLength={6} required />
+            <PasswordInput className="w-full px-4 py-3 bg-surface-container rounded-lg border-none text-on-surface" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="Confirm new password" aria-label="Confirm new password" autoComplete="new-password" minLength={6} required />
             <button className="w-full py-3.5 bg-primary text-on-primary rounded-full font-semibold text-sm disabled:opacity-60" type="submit" disabled={loading}>{loading ? 'Updating…' : 'Update password'}</button>
           </form>
         </div>

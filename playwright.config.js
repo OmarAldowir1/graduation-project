@@ -24,7 +24,10 @@ export default defineConfig({
   },
   projects: [
     { name: 'signed-out', testMatch: /public\.spec\.js/ },
-    ...(hasLogin ? [{ name: 'signed-in', testMatch: /team-flow\.spec\.js/, use: { storageState: AUTH_FILE } }] : [])
+    ...(hasLogin ? [
+      { name: 'signed-in', testMatch: /team-flow\.spec\.js/, use: { storageState: AUTH_FILE } },
+      { name: 'sign-in', testMatch: /sign-in\.spec\.js/ }
+    ] : [])
   ],
   webServer: {
     command: 'npm run dev',

@@ -1088,6 +1088,8 @@ export default function App() {
 
     async function bootstrap() {
       setIsBootstrapping(true);
+      // While the account loads, nobody is "signed out" yet (see the redirect in onHashChange).
+      AppState.isLoading = true;
       try {
         if (!isSupabaseConfigured) {
           AppState.user = null;
@@ -1176,6 +1178,7 @@ export default function App() {
         console.error('Bootstrap error:', err);
         showToast(err?.message || 'Failed to bootstrap app', 'error');
       } finally {
+        AppState.isLoading = false;
         setIsBootstrapping(false);
         // First visit for this person: offer the short "How Groupify works" guide once.
         try {
@@ -1208,6 +1211,9 @@ export default function App() {
         return;
       }
       if (event === 'SIGNED_IN') {
+        // Mark the account as loading right away: the sign-in page moves to Home before
+        // bootstrap runs, and that move must not be treated as a signed-out visit.
+        AppState.isLoading = true;
         // Leave the SDK's auth notification/lock before making more auth calls.
         window.clearTimeout(authBootstrapTimer);
         authBootstrapTimer = window.setTimeout(() => { void bootstrap(); }, 0);
